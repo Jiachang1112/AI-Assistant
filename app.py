@@ -7,8 +7,11 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# --- 設定區 (請換成你的 Key) ---
-# 建議之後改用環境變數 (Environment Variables) 比較安全，現在先直接填入測試
+# --- 偵錯區：印出版本 ---
+# 這行會在 Log 裡告訴我們真相
+print(f"-------------- 目前 GenAI 套件版本: {genai.__version__} --------------")
+
+# --- 設定區 ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -18,46 +21,39 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai.configure(api_key=GEMINI_API_KEY)
 
-# 建立 Gemini 模型
-model = genai.GenerativeModel('gemini-1.5-flash')
+# --- 暫時換成 gemini-pro 測試 ---
+# 如果 gemini-pro 會動，代表是 flash 模型的問題
+# 如果連 gemini-pro 都不動，代表是 API Key 或環境的問題
+model = genai.GenerativeModel('gemini-pro') 
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    # 取得 LINE 的簽章
     signature = request.headers['X-Line-Signature']
-    # 取得請求內容
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
-
-    # 驗證簽章並處理事件
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
     return 'OK'
 
-# 當收到「文字訊息」時的處理邏輯
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_msg = event.message.text
-    
     try:
-        # 1. 呼叫 Gemini
         response = model.generate_content(user_msg)
         reply_text = response.text
-        
-        # 2. 回覆 LINE
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=reply_text)
         )
     except Exception as e:
-        # 錯誤處理
+        # 印出詳細錯誤到 Log
+        print(f"Error Detail: {e}")
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="抱歉，我的大腦打結了...")
         )
-        print(f"Error: {e}")
 
 if __name__ == "__main__":
     app.run()
