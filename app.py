@@ -9,9 +9,9 @@ app = Flask(__name__)
 
 # --- 設定區 (請換成你的 Key) ---
 # 建議之後改用環境變數 (Environment Variables) 比較安全，現在先直接填入測試
-LINE_CHANNEL_ACCESS_TOKEN = '你的_LINE_CHANNEL_ACCESS_TOKEN'
-LINE_CHANNEL_SECRET = '你的_LINE_CHANNEL_SECRET'
-GEMINI_API_KEY = '你的_GEMINI_API_KEY'
+LINE_CHANNEL_ACCESS_TOKEN = '8Wkmkec8zL/b8znXN2LI11tDT/5LB/VetUr7vKGNaASPWMTN610AQkbCTPp7XOm+Gv75w3+Slds2IeOxY40oQCgci8iYypnzLJdx4Z6ZqIezmDbCpryGXSZT6qxVj6yJ14o6nR7guJAeGVRZWYHbUgdB04t89/1O/w1cDnyilFU='
+LINE_CHANNEL_SECRET = '53699c00be5b8889f43523fe18e91f2b'
+GEMINI_API_KEY = 'AIzaSyDhoqgEMJ_PHot7yokrtf-xWbqt4bfj4qI'
 
 # --- 初始化設定 ---
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
