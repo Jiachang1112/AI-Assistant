@@ -78,3 +78,14 @@ def handle_message(event):
 
 if __name__ == "__main__":
     app.run()
+
+@app.route("/debug_models")
+def debug_models():
+    try:
+        models = list(genai.list_models())
+        result = []
+        for m in models:
+            result.append(f"{m.name} | supported: {m.supported_generation_methods}")
+        return "<br>".join(result), 200
+    except Exception as e:
+        return f"Error: {e}", 500
