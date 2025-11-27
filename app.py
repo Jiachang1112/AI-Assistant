@@ -27,9 +27,21 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# 直接用你本機確認有支援的模型：gemini-2.0-flash
-model = genai.GenerativeModel("gemini-2.0-flash")
+# --- 設定系統指令 ---
+# 指令重點：
+# 1. 根據使用者的語言回應 (Detect language)。
+# 2. 強制規則：如果是中文，必須使用繁體中文 (Traditional Chinese)。
+sys_instruction = """
+你是一個有用的 AI 助手。
+請根據使用者輸入的語言來決定回應的語言（例如使用者用英文，你就回英文）。
+但在使用中文時，請務必遵守以下最高指導原則：
+「所有中文回應都必須使用繁體中文 (Traditional Chinese)，絕對禁止使用簡體中文。」
+"""
 
+model = genai.GenerativeModel(
+    "gemini-2.0-flash",
+    system_instruction=sys_instruction
+)
 # 健康檢查（給 UptimeRobot 或瀏覽器測試）
 @app.route("/")
 def home():
