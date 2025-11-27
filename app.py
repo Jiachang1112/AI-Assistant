@@ -7,67 +7,62 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# --- 設定區 ---
+# --- 設定區 (從 Render 環境變數讀取) ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
-# --- 初始化設定 ---
+# --- 初始化 LINE 與 Gemini ---
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 🔍 關鍵診斷：列出所有可用模型 ---
-print(f"============== 開始檢查模型清單 ==============")
-try:
-    available_models = []
-    for m in genai.list_models():
-        print(f"發現模型: {m.name}")
-        if 'generateContent' in m.supported_generation_methods:
-            available_models.append(m.name)
-            print(f"   -> ✅ 支援對話生成")
-    
-    print(f"總結可用模型: {available_models}")
+# 🔥 關鍵修改：直接指定最穩定的 Flash 模型
+# 這是目前免費額度最高 (15 RPM)、速度最快的模型，最適合做 LINE 機器人
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-    # 自動選擇一個可用的模型 (優先選 flash, 沒有就選 pro, 再沒有就選第一個能用的)
-    if 'models/gemini-1.5-flash' in available_models:
-        target_model = 'gemini-1.5-flash'
-    elif 'models/gemini-pro' in available_models:
-        target_model = 'gemini-pro'
-    elif available_models:
-        target_model = available_models[0].replace('models/', '') # 移除前綴嘗試
-    else:
-        target_model = 'gemini-1.5-flash' # 預設賭一把
-        print("❌ 警告：沒有找到任何支援對話的模型，強制設定為 flash")
-
-    print(f"============== 最終決定使用模型: {target_model} ==============")
-    model = genai.GenerativeModel(target_model)
-
-except Exception as e:
-    print(f"❌ API Key 或連線發生嚴重錯誤: {e}")
-    # 為了讓程式不崩潰，還是建立一個預設的
-    model = genai.GenerativeModel('gemini-1.5-flash')
+# ✅ UptimeRobot 的應門口 (新增這個！)
+# 當 UptimeRobot 每 5 分鐘來敲首頁時，回傳 "alive" 讓它知道機器人活著
+# 這樣 Render 就不會進入休眠模式，LINE 訊息就能「秒回」
+@app.route("/")
+def home():
+    return "Hello! I am alive!", 200
 
 @app.route("/callback", methods=['POST'])
 def callback():
+    # 取得 LINE 傳來的簽章 (安全性檢查)
     signature = request.headers['X-Line-Signature']
+    # 取得訊息內容
     body = request.get_data(as_text=True)
+    
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
     return 'OK'
 
+# 當收到文字訊息時
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_msg = event.message.text
     try:
+        # 1. 丟給 Gemini 思考
         response = model.generate_content(user_msg)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response.text))
+        reply_text = response.text
+        
+        # 2. 回傳給使用者
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply_text)
+        )
     except Exception as e:
-        error_msg = str(e)
-        print(f"對話失敗: {error_msg}")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"發生錯誤，請查看 Log: {error_msg[:30]}..."))
+        # 錯誤處理 (印出 Log 供除錯)
+        print(f"Error: {e}")
+        # 如果真的遇到 429 或其他錯誤，回傳友善訊息
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="我現在有點忙 (或是發生連線錯誤)，請再試一次...")
+        )
 
 if __name__ == "__main__":
     app.run()
