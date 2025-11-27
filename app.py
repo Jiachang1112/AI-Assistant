@@ -13,13 +13,15 @@ logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# --- 環境變數 ---
+# --- 環境變數 (對應你的 Render 截圖) ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# 檢查變數是否存在
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not GEMINI_API_KEY:
-    raise RuntimeError("環境變數沒有設好，請在 Render Environment 確認三個值都有設定")
+    # 這裡只檢查基本對話需要的變數，Google Client ID 等日曆功能要用時再檢查
+    raise RuntimeError("環境變數沒有設好，請在 Render Environment 確認 LINE 與 Gemini 的值都有設定")
 
 # --- 初始化 LINE / Gemini ---
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -28,9 +30,6 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai.configure(api_key=GEMINI_API_KEY)
 
 # --- 設定系統指令 ---
-# 指令重點：
-# 1. 根據使用者的語言回應 (Detect language)。
-# 2. 強制規則：如果是中文，必須使用繁體中文 (Traditional Chinese)。
 sys_instruction = """
 你是一個有用的 AI 助手。
 請根據使用者輸入的語言來決定回應的語言（例如使用者用英文，你就回英文）。
@@ -38,11 +37,13 @@ sys_instruction = """
 「所有中文回應都必須使用繁體中文 (Traditional Chinese)，絕對禁止使用簡體中文。」
 """
 
+# 使用 gemini-1.5-flash 比較保險，速度也快
 model = genai.GenerativeModel(
-    "gemini-2.0-flash",
+    "gemini-1.5-flash",
     system_instruction=sys_instruction
 )
-# 健康檢查（給 UptimeRobot 或瀏覽器測試）
+
+# 健康檢查
 @app.route("/")
 def home():
     return "OK - AI Assistant is running", 200
