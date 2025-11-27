@@ -1,4 +1,6 @@
 flask
+gunicorn
 line-bot-sdk
 google-generativeai
-gunicorn
+google-cloud-firestore
+requests
