@@ -27,10 +27,13 @@ LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
-FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS") # 新增這行
+FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS")
 
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "random_secret_string") 
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+# --- 關鍵修正：解決 LINE 瀏覽器 MismatchingStateError 問題 ---
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "random_secret_string")
+app.config['SESSION_COOKIE_SECURE'] = True  # 確保透過 HTTPS 傳輸 Cookie
+app.config['SESSION_COOKIE_SAMESITE'] = 'None' # 允許跨站傳輸 (解決 LINE 瀏覽器阻擋問題)
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1' # Render 內部轉發需要
 
 # 檢查變數
 if not all([LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, FIREBASE_CREDENTIALS_JSON]):
@@ -43,10 +46,10 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # --- 初始化 Firebase ---
 try:
-    # 讀取環境變數中的 JSON 字串並轉為字典
-    cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
-    cred = credentials.Certificate(cred_dict)
-    firebase_admin.initialize_app(cred)
+    if not firebase_admin._apps:
+        cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
     db = firestore.client()
     logging.info("Firebase 初始化成功！")
 except Exception as e:
@@ -59,12 +62,9 @@ SCOPES = [
     'openid'
 ]
 
-# --- 資料庫操作函式 (取代原本的記憶體字典) ---
-
+# --- 資料庫操作函式 ---
 def save_user_credentials(user_id, creds_data):
-    """將使用者的憑證存入 Firestore"""
     try:
-        # 在 'users' 集合中，以 user_id 為檔名儲存
         doc_ref = db.collection('users').document(user_id)
         doc_ref.set(creds_data)
         logging.info(f"使用者 {user_id} 資料已儲存至 Firebase")
@@ -72,7 +72,6 @@ def save_user_credentials(user_id, creds_data):
         logging.error(f"儲存 Firebase 失敗: {e}")
 
 def get_user_credentials(user_id):
-    """從 Firestore 讀取使用者憑證"""
     try:
         doc_ref = db.collection('users').document(user_id)
         doc = doc_ref.get()
@@ -107,13 +106,15 @@ def get_system_instruction():
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Firebase Enabled Bot", 200
+    return "OK - Secure Cookie Bot", 200
 
 @app.route("/login")
 def login():
     line_user_id = request.args.get('userid')
     if not line_user_id:
         return "錯誤：無效的使用者 ID"
+    
+    session.permanent = True  # 設定 Session 持久化
     session['line_user_id'] = line_user_id
 
     client_config = {
@@ -124,19 +125,31 @@ def login():
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     }
+    
     redirect_uri = url_for('oauth2callback', _external=True)
     flow = Flow.from_client_config(client_config=client_config, scopes=SCOPES, redirect_uri=redirect_uri)
-    authorization_url, state = flow.authorization_url(access_type='offline', include_granted_scopes='true')
+    
+    # 強制 prompt='consent' 以取得 refresh_token
+    authorization_url, state = flow.authorization_url(
+        access_type='offline', 
+        include_granted_scopes='true',
+        prompt='consent' 
+    )
+    
     session['state'] = state
     return redirect(authorization_url)
 
 @app.route("/oauth2callback")
 def oauth2callback():
-    state = session.get('state')
+    # 檢查 state 是否存在 (解決 MismatchingStateError)
+    if 'state' not in session:
+        return "錯誤：瀏覽器 Session 失效。請嘗試「複製連結」並在 Chrome/Safari 瀏覽器中開啟以完成登入。"
+        
+    state = session['state']
     line_user_id = session.get('line_user_id')
     
     if not line_user_id:
-        return "錯誤：Session 過期。"
+        return "錯誤：無法識別使用者，請重新登入。"
 
     client_config = {
         "web": {
@@ -147,29 +160,38 @@ def oauth2callback():
         }
     }
     redirect_uri = url_for('oauth2callback', _external=True)
-    flow = Flow.from_client_config(client_config=client_config, scopes=SCOPES, state=state, redirect_uri=redirect_uri)
-    flow.fetch_token(authorization_response=request.url)
-    creds = flow.credentials
     
-    # 準備要存入 Firebase 的資料
-    creds_data = {
-        'token': creds.token,
-        'refresh_token': creds.refresh_token,
-        'token_uri': creds.token_uri,
-        'client_id': creds.client_id,
-        'client_secret': creds.client_secret,
-        'scopes': creds.scopes
-    }
-
-    # --- 寫入 Firebase ---
-    save_user_credentials(line_user_id, creds_data)
-
+    flow = Flow.from_client_config(client_config=client_config, scopes=SCOPES, state=state, redirect_uri=redirect_uri)
+    
     try:
-        line_bot_api.push_message(line_user_id, TextSendMessage(text="🎉 綁定成功！資料已安全儲存。"))
-    except Exception as e:
-        logging.error(f"Push message failed: {e}")
+        flow.fetch_token(authorization_response=request.url)
+        creds = flow.credentials
+        
+        # 檢查是否有 refresh_token
+        if not creds.refresh_token:
+            logging.warning("警告：Google 未回傳 refresh_token")
+        
+        creds_data = {
+            'token': creds.token,
+            'refresh_token': creds.refresh_token,
+            'token_uri': creds.token_uri,
+            'client_id': creds.client_id,
+            'client_secret': creds.client_secret,
+            'scopes': creds.scopes
+        }
 
-    return "綁定成功！請關閉視窗。"
+        save_user_credentials(line_user_id, creds_data)
+
+        try:
+            line_bot_api.push_message(line_user_id, TextSendMessage(text="🎉 綁定成功！我現在有永久記憶了，請試著叫我新增行程。"))
+        except:
+            pass
+            
+        return "綁定成功！請關閉視窗回到 LINE。"
+        
+    except Exception as e:
+        logging.error(f"OAuth callback error: {e}")
+        return f"綁定失敗，請重試。錯誤訊息：{e}"
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -183,15 +205,28 @@ def callback():
 
 # --- 執行 Calendar API ---
 def execute_calendar_api(user_id, function_name, args):
-    # --- 從 Firebase 讀取 ---
     creds_info = get_user_credentials(user_id)
-    
-    if not creds_info:
-        return "錯誤：使用者尚未登入，無法執行日曆操作。請輸入「登入」。"
+    if not creds_info or not creds_info.get('refresh_token'):
+        return "錯誤：授權已過期或不完整。請輸入「登入」重新綁定 Google 帳號。"
 
     creds = Credentials.from_authorized_user_info(creds_info)
     
     try:
+        # 如果 token 過期，自動 refresh
+        if creds.expired and creds.refresh_token:
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            # 更新資料庫裡的新 token
+            creds_data = {
+                'token': creds.token,
+                'refresh_token': creds.refresh_token,
+                'token_uri': creds.token_uri,
+                'client_id': creds.client_id,
+                'client_secret': creds.client_secret,
+                'scopes': creds.scopes
+            }
+            save_user_credentials(user_id, creds_data)
+
         service = build('calendar', 'v3', credentials=creds)
         
         if function_name == "create_calendar_event":
@@ -238,7 +273,7 @@ def execute_calendar_api(user_id, function_name, args):
 
     except Exception as e:
         logging.error(f"Google API Error: {e}")
-        return f"執行日曆操作時發生錯誤：{str(e)}"
+        return f"執行錯誤：{str(e)}。可能需要重新輸入「登入」。"
     
     return "未知的操作。"
 
@@ -249,7 +284,8 @@ def handle_message(event):
 
     if user_msg in ["登入", "綁定", "連結Google"]:
         login_url = url_for('login', userid=user_id, _external=True)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定：\n{login_url}"))
+        # 加入 openExternalBrowser=1 參數，嘗試強制讓 LINE 使用外部瀏覽器開啟 (這招在 LINE 有效)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定 (若失敗請複製連結到 Chrome 開啟)：\n{login_url}"))
         return
 
     try:
@@ -262,7 +298,6 @@ def handle_message(event):
             func_name = fc.name
             func_args = dict(fc.args)
             
-            # 這裡的 execute_calendar_api 內部已經改為讀取 Firebase
             api_result = execute_calendar_api(user_id, func_name, func_args)
             
             response_part = {
@@ -278,7 +313,7 @@ def handle_message(event):
 
     except Exception as e:
         logging.exception("Gemini Error")
-        reply_text = f"系統發生錯誤，請稍後再試。(錯誤: {str(e)})"
+        reply_text = "系統忙碌中，請稍後再試。"
 
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
