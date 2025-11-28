@@ -6,4 +6,5 @@ google-cloud-firestore
 google-auth-oauthlib
 google-auth
 google-api-python-client
+firebase-admin
 requests
