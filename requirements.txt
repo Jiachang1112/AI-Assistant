@@ -4,4 +4,6 @@ line-bot-sdk
 google-generativeai
 google-cloud-firestore
 google-auth-oauthlib
+google-auth
+google-api-python-client
 requests
