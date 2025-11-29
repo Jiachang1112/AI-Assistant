@@ -2,11 +2,10 @@ import os
 import logging
 import datetime
 import json
-import requests # <--- 新增：用來強制發送動畫請求
+import requests # 用來強制發送動畫請求
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-# --- Flex Message & QuickReply 相關元件 ---
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
     FlexSendMessage, BubbleContainer, BoxComponent, 
@@ -19,7 +18,6 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-# --- Firebase 相關 ---
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -101,6 +99,15 @@ def delete_user_credentials(user_id):
         logging.error(f"刪除 Firebase 失敗: {e}")
         return False
 
+# --- 新增：儲存使用者風格 ---
+def save_user_style(user_id, style):
+    try:
+        doc_ref = db.collection('users').document(user_id)
+        doc_ref.set({'reply_style': style}, merge=True)
+        logging.info(f"使用者 {user_id} 風格已設定為: {style}")
+    except Exception as e:
+        logging.error(f"儲存風格失敗: {e}")
+
 # --- 資料庫操作 (記憶相關) ---
 def get_chat_history(user_id):
     """從 Firebase 讀取對話紀錄"""
@@ -167,7 +174,8 @@ def get_calendar_events(time_min: str = None):
 
 tools_list = [create_calendar_event, get_calendar_events]
 
-def get_system_instruction():
+# --- 修改：System Instruction 支援風格 ---
+def get_system_instruction(style=None):
     # 取得 UTC 時間，然後手動加 8 小時變成台灣時間
     utc_now = datetime.datetime.utcnow()
     taipei_time = utc_now + datetime.timedelta(hours=8)
@@ -175,17 +183,23 @@ def get_system_instruction():
     # 轉成字串
     now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
     
-    return f"""
-    你是一個專業的 Google 日曆助理。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
+    base_instruction = f"""
+    你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
     1. 當使用者想「查詢」或「新增」行程時，請務必呼叫對應的 function tool。
     2. 使用者說的時間如果是相對時間（如「明天下午三點」），請根據現在時間轉換成 ISO 8601 格式 (YYYY-MM-DDTHH:MM:SS)。
     3. 如果使用者沒有指定結束時間，預設行程長度為 1 小時。
     4. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
     5. 回應時請使用繁體中文 (Traditional Chinese)。
+    6. 若使用者輸入金額與項目（例如：午餐 100元），請扮演記帳助手，確認已記錄並給予簡短評語（例如提醒省錢或鼓勵）。
     """
+    
+    if style:
+        base_instruction += f"\n\n【重要指令】請務必依照以下「{style}」的風格與語氣來回應使用者的所有訊息(包含記帳評語)：\n{style}"
+    
+    return base_instruction
 
-# --- 動態產生 Quick Reply 按鈕 ---
+# --- 修改：動態產生 Quick Reply 按鈕 (調整順序) ---
 def get_quick_reply(user_id):
     # 先去資料庫檢查這個人是否已登入
     creds = get_user_credentials(user_id)
@@ -195,17 +209,19 @@ def get_quick_reply(user_id):
     items = [
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
+        # 新增：記帳與風格按鈕
+        QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
+        # 清空對話
+        QuickReplyButton(action=MessageAction(label="🗑️ 清空對話", text="清空對話")),
+        # 功能說明
+        QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
     ]
 
-    # 根據登入狀態切換按鈕
+    # 登入/登出移到最後面
     if is_logged_in:
         items.append(QuickReplyButton(action=MessageAction(label="👋 登出", text="登出")))
     else:
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
-
-    # 【新增】清空對話按鈕
-    items.append(QuickReplyButton(action=MessageAction(label="🗑️ 清空對話", text="清空對話")))
-    items.append(QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")))
 
     return QuickReply(items=items)
 
@@ -263,7 +279,7 @@ def create_event_flex_message(event_data):
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Bot with Forced Animation", 200
+    return "OK - Bot with Accounting Style", 200
 
 @app.route("/login")
 def login():
@@ -454,6 +470,33 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
+    # --- 新增：處理記帳/風格按鈕點擊 ---
+    if user_msg == "開啟記帳模式":
+        msg = """📝 歡迎使用記帳模式！
+您可以直接輸入「午餐 100元」、「飲料 50」來記帳。
+
+💡 您也可以調整我的回覆風格：
+請輸入以下指令：
+- 設定風格：毒舌管家
+- 設定風格：溫柔秘書
+- 設定風格：嚴格會計
+(也可以自訂，例如「設定風格：傲嬌妹妹」)"""
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id))
+        )
+        return
+
+    # --- 新增：處理設定風格指令 ---
+    if user_msg.startswith("設定風格："):
+        new_style = user_msg.replace("設定風格：", "").strip()
+        save_user_style(user_id, new_style)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"✅ 風格已設定為「{new_style}」！接下來我會用這個風格回應您。", quick_reply=get_quick_reply(user_id))
+        )
+        return
+
     # --- 功能指令：清空對話 ---
     if user_msg == "清空對話":
         clear_chat_history(user_id)
@@ -501,7 +544,7 @@ def handle_message(event):
         )
         return
 
-    # --- 3. 顯示載入中動畫 (Loading Animation - 強制使用 requests 發送) ---
+    # --- 3. 顯示載入中動畫 (Loading Animation) ---
     try:
         url = "https://api.line.me/v2/bot/chat/loading/start"
         headers = {
@@ -518,11 +561,24 @@ def handle_message(event):
         logging.warning(f"Failed to send loading animation: {e}")
 
     try:
-        # --- 4. 讀取歷史記憶 ---
-        history = get_chat_history(user_id)
+        # --- 4. 讀取資料 (記憶與風格) ---
+        # 這裡我們讀取一次資料庫，同時拿到 history 和 style
+        doc = db.collection('users').document(user_id).get()
+        history = []
+        user_style = None
+        
+        if doc.exists:
+            data = doc.to_dict()
+            user_style = data.get('reply_style') # 讀取風格
+            raw_history = data.get('chat_history', [])
+            for h in raw_history:
+                history.append({"role": h['role'], "parts": [h['text']]})
 
-        # --- 5. 呼叫 Gemini (帶有記憶) ---
-        model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=get_system_instruction())
+        # --- 5. 呼叫 Gemini (帶有記憶 & 風格) ---
+        # 將風格注入 System Instruction
+        current_instruction = get_system_instruction(user_style)
+        
+        model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=current_instruction)
         # 將 history 餵給 start_chat
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
