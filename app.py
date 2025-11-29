@@ -397,7 +397,7 @@ def handle_message(event):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text=f"你的 LINE User ID 是：\n{user_id}",
+                text=f"您的 LINE User ID 是：\n{user_id}",
                 quick_reply=get_quick_reply(user_id)
             )
         )
