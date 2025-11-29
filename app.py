@@ -140,23 +140,46 @@ def clear_chat_history(user_id):
         logging.error(f"清空對話失敗: {e}")
         return False
 
-# --- [新增] 記帳相關資料庫操作 ---
+# --- [新增] 記帳同步邏輯 ---
 
-# 1. 取得預設帳本 ID
-def get_default_ledger_id(user_id):
+# 1. 透過 Email 尋找網頁版的 Firebase UID
+def find_web_uid_by_email(email):
     try:
-        ledgers_ref = db.collection('users').document(user_id).collection('ledgers')
+        if not email or email == 'unknown':
+            return None
         
+        # 搜尋 users 集合中，email 欄位符合的使用者
+        users_ref = db.collection('users')
+        query = users_ref.where('email', '==', email).limit(1)
+        results = query.get()
+        
+        if results:
+            # 找到了！回傳網頁版的 UID
+            return results[0].id
+        else:
+            return None
+    except Exception as e:
+        logging.error(f"搜尋網頁用戶失敗: {e}")
+        return None
+
+# 2. 取得預設帳本 ID (修改版：支援指定 UID)
+def get_default_ledger_id(target_uid):
+    try:
+        ledgers_ref = db.collection('users').document(target_uid).collection('ledgers')
+        
+        # A. 找預設
         q_default = ledgers_ref.where('isDefault', '==', True).limit(1)
         snap_default = q_default.get()
         if snap_default:
             return snap_default[0].id
             
+        # B. 找最早建立的
         q_first = ledgers_ref.order_by('createdAt').limit(1)
         snap_first = q_first.get()
         if snap_first:
             return snap_first[0].id
             
+        # C. 都沒有，自動建立一個
         new_ledger = {
             'name': '預設帳本',
             'currency': 'TWD',
@@ -178,7 +201,6 @@ def create_calendar_event(title: str, start_time: str, end_time: str, descriptio
 def get_calendar_events(time_min: str = None):
     return "Calendar list request received."
 
-# [新增] 記帳 Tool
 def add_accounting_entry(item: str, amount: float, category: str = "其他", type: str = "expense", note: str = ""):
     """
     將記帳資料寫入使用者的預設帳本。
@@ -224,15 +246,11 @@ def get_quick_reply(user_id):
     items = [
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
-        # 新增：記帳與風格按鈕
         QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
-        # 清空對話
         QuickReplyButton(action=MessageAction(label="🗑️ 清空對話", text="清空對話")),
-        # 功能說明
         QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
     ]
 
-    # 登入/登出移到最後面
     if is_logged_in:
         items.append(QuickReplyButton(action=MessageAction(label="👋 登出", text="登出")))
     else:
@@ -240,7 +258,7 @@ def get_quick_reply(user_id):
 
     return QuickReply(items=items)
 
-# --- Flex Message (日曆) ---
+# --- Flex Message ---
 def create_event_flex_message(event_data):
     summary = event_data.get('summary', '無標題')
     html_link = event_data.get('htmlLink')
@@ -283,7 +301,6 @@ def create_event_flex_message(event_data):
     )
     return FlexSendMessage(alt_text=f"已建立行程：{summary}", contents=bubble)
 
-# --- [新增] Flex Message (記帳) ---
 def create_accounting_flex_message(data):
     is_income = data.get('type') == 'income'
     color = '#10b981' if is_income else '#ef4444'
@@ -320,11 +337,10 @@ def create_accounting_flex_message(data):
     )
     return FlexSendMessage(alt_text=f"記帳成功：{data.get('item')}", contents=bubble)
 
-
 # --- Routes ---
 @app.route("/")
 def home():
-    return "OK - Bot with Accounting Integration", 200
+    return "OK - Bot Syncing with Web App", 200
 
 @app.route("/login")
 def login():
@@ -360,7 +376,7 @@ def oauth2callback():
         creds_data = {'google_email': user_email, 'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes}
         save_user_credentials(line_user_id, creds_data)
         try:
-            line_bot_api.push_message(line_user_id, TextSendMessage(text=f"🎉 綁定成功！帳號：{user_email}", quick_reply=get_quick_reply(line_user_id)))
+            line_bot_api.push_message(line_user_id, TextSendMessage(text=f"🎉 綁定成功！帳號：{user_email}\n系統已同步您的記帳資料庫。", quick_reply=get_quick_reply(line_user_id)))
         except: pass
         return f"綁定成功！帳號：{user_email}。請關閉視窗。"
     except Exception as e: return f"綁定失敗：{e}"
@@ -375,16 +391,32 @@ def callback():
 
 # --- 核心邏輯：執行 API (日曆 & 記帳) ---
 def execute_api_logic(user_id, function_name, args):
+    # 1. 檢查 LINE 用戶是否已綁定
     creds_info = get_user_credentials(user_id)
     if not creds_info or not creds_info.get('refresh_token'):
         return "錯誤：請先登入。"
 
-    # 2. 處理記帳
+    # 2. 處理記帳 (寫入網頁版的 Firebase UID)
     if function_name == "add_accounting_entry":
         try:
-            ledger_id = get_default_ledger_id(user_id)
+            # A. 取得使用者的 Email
+            user_email = creds_info.get('google_email')
+            if not user_email:
+                return "錯誤：找不到您的 Email 資訊，請重新綁定。"
+
+            # B. 尋找網頁版的 UID (同步關鍵!)
+            target_uid = find_web_uid_by_email(user_email)
+            
+            # 如果網頁版還沒登入過，暫時寫在 LINE ID 下，或者可以選擇自動建立一個
+            # 這裡我們選擇：如果找不到，就寫在 LINE ID 下 (之後使用者登入網頁若用同 Email 可能會看不到，建議使用者先去網頁登入)
+            if not target_uid:
+                logging.warning(f"找不到 Email {user_email} 的網頁用戶，將使用 LINE ID 暫存。")
+                target_uid = user_id 
+
+            # C. 取得該 UID 的預設帳本
+            ledger_id = get_default_ledger_id(target_uid)
             if not ledger_id:
-                return "錯誤：無法取得或建立帳本，請稍後再試。"
+                return "錯誤：無法取得帳本，請先登入網頁版建立帳本。"
             
             now_iso = datetime.datetime.now().strftime("%Y-%m-%d")
             entry_data = {
@@ -398,7 +430,8 @@ def execute_api_logic(user_id, function_name, args):
                 'source': 'line-bot'
             }
             
-            db.collection('users').document(user_id)\
+            # 寫入 Firestore
+            db.collection('users').document(target_uid)\
               .collection('ledgers').document(ledger_id)\
               .collection('entries').add(entry_data)
               
@@ -417,7 +450,7 @@ def execute_api_logic(user_id, function_name, args):
             logging.error(f"記帳失敗: {e}")
             return f"記帳系統發生錯誤: {e}"
 
-    # 3. 處理日曆
+    # 3. 處理日曆 (需要 Google API Client)
     creds = Credentials.from_authorized_user_info(creds_info)
     try:
         if creds.expired and creds.refresh_token:
@@ -463,7 +496,6 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
-    # --- 按鈕指令 ---
     if user_msg == "開啟記帳模式":
         msg = "📝 記帳模式已就緒！\n請直接輸入：午餐 100、飲料 50...\n\n💡 也可以設定風格：\n- 設定風格：毒舌管家\n- 設定風格：溫柔秘書"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id)))
@@ -494,7 +526,6 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定：\n{login_url}", quick_reply=get_quick_reply(user_id)))
         return
 
-    # --- 載入動畫 ---
     try:
         url = "https://api.line.me/v2/bot/chat/loading/start"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
@@ -502,7 +533,6 @@ def handle_message(event):
     except: pass
 
     try:
-        # --- 讀取資料 ---
         doc = db.collection('users').document(user_id).get()
         history = []
         user_style = None
@@ -512,13 +542,11 @@ def handle_message(event):
             raw_h = data.get('chat_history', [])
             for h in raw_h: history.append({"role": h['role'], "parts": [h['text']]})
 
-        # --- Gemini ---
         current_instruction = get_system_instruction(user_style)
         model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=current_instruction)
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
-        # --- Function Call ---
         if response.parts and response.parts[0].function_call:
             fc = response.parts[0].function_call
             func_name = fc.name
@@ -552,7 +580,6 @@ def handle_message(event):
                             "response": {"result": "Event created success."}
                         }
                     })
-                
                 else:
                     response_part = {"function_response": {"name": func_name, "response": {"result": api_result}}}
                     final_res = chat.send_message(response_part)
@@ -563,8 +590,6 @@ def handle_message(event):
                 final_res = chat.send_message(response_part)
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=final_res.text, quick_reply=get_quick_reply(user_id)))
                 save_chat_history(user_id, user_msg, final_res.text)
-
-        # --- 一般對話 ---
         else:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response.text, quick_reply=get_quick_reply(user_id)))
             save_chat_history(user_id, user_msg, response.text)
