@@ -89,6 +89,16 @@ def get_user_credentials(user_id):
         logging.error(f"讀取 Firebase 失敗: {e}")
         return None
 
+# 【新增】刪除使用者資料 (登出用)
+def delete_user_credentials(user_id):
+    try:
+        db.collection('users').document(user_id).delete()
+        logging.info(f"使用者 {user_id} 已從資料庫刪除 (登出)")
+        return True
+    except Exception as e:
+        logging.error(f"刪除 Firebase 失敗: {e}")
+        return False
+
 # --- 工具函式 (Tools) ---
 def create_calendar_event(title: str, start_time: str, end_time: str, description: str = ""):
     return "Event creation request received."
@@ -116,14 +126,28 @@ def get_system_instruction():
     5. 回應時請使用繁體中文 (Traditional Chinese)。
     """
 
-# --- 新增：製作快速回覆按鈕 (Quick Reply) ---
-def get_quick_reply():
-    return QuickReply(items=[
+# --- 【修改】動態產生 Quick Reply 按鈕 ---
+def get_quick_reply(user_id):
+    # 先去資料庫檢查這個人是否已登入
+    creds = get_user_credentials(user_id)
+    is_logged_in = creds is not None
+
+    items = [
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
-        QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")),
-        QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
-    ])
+    ]
+
+    # 根據登入狀態切換按鈕
+    if is_logged_in:
+        # 已登入 -> 顯示「登出」
+        items.append(QuickReplyButton(action=MessageAction(label="👋 登出", text="登出")))
+    else:
+        # 未登入 -> 顯示「登入」
+        items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
+
+    items.append(QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")))
+
+    return QuickReply(items=items)
 
 # --- 新增：製作漂亮行程卡片的函式 ---
 def create_event_flex_message(event_data):
@@ -179,7 +203,7 @@ def create_event_flex_message(event_data):
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Bot with Quick Reply", 200
+    return "OK - Bot with Dynamic Buttons", 200
 
 @app.route("/login")
 def login():
@@ -255,7 +279,14 @@ def oauth2callback():
         save_user_credentials(line_user_id, creds_data)
 
         try:
-            line_bot_api.push_message(line_user_id, TextSendMessage(text="🎉 綁定成功！我現在有永久記憶了，請試著叫我新增行程。"))
+            # 綁定成功後，推播訊息並更新按鈕為「登出」
+            line_bot_api.push_message(
+                line_user_id, 
+                TextSendMessage(
+                    text="🎉 綁定成功！我現在有永久記憶了，請試著叫我新增行程。",
+                    quick_reply=get_quick_reply(line_user_id) # 這裡會自動變成登出按鈕
+                )
+            )
         except:
             pass
             
@@ -354,25 +385,37 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
-    # --- 1. 處理登入綁定 ---
+    # --- 1. 處理登出指令 ---
+    if user_msg == "登出":
+        delete_user_credentials(user_id)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                text="已成功登出！若要繼續使用日曆功能，請重新登入。",
+                quick_reply=get_quick_reply(user_id) # 登出後，這裡會變回「登入」按鈕
+            )
+        )
+        return
+
+    # --- 2. 處理登入綁定 ---
     if user_msg in ["登入", "綁定", "連結Google"]:
         login_url = url_for('login', userid=user_id, _external=True)
         line_bot_api.reply_message(
             event.reply_token, 
             TextSendMessage(
                 text=f"請點擊連結進行綁定 (若失敗請複製連結到 Chrome 開啟)：\n{login_url}",
-                quick_reply=get_quick_reply()
+                quick_reply=get_quick_reply(user_id)
             )
         )
         return
 
+    # --- 3. Gemini 對話 ---
     try:
-        # --- 2. 呼叫 Gemini ---
         model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=get_system_instruction())
         chat = model.start_chat(enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
-        # --- 3. 處理 Function Call ---
+        # --- 處理 Function Call ---
         if response.parts and response.parts[0].function_call:
             fc = response.parts[0].function_call
             func_name = fc.name
@@ -383,7 +426,7 @@ def handle_message(event):
             # (A) 如果是建立行程成功 (回傳字典)
             if isinstance(api_result, dict) and 'htmlLink' in api_result:
                 flex_msg = create_event_flex_message(api_result)
-                flex_msg.quick_reply = get_quick_reply() # 加入按鈕
+                flex_msg.quick_reply = get_quick_reply(user_id) # 加入按鈕
                 
                 line_bot_api.reply_message(event.reply_token, flex_msg)
                 
@@ -409,16 +452,16 @@ def handle_message(event):
                     event.reply_token, 
                     TextSendMessage(
                         text=final_response.text,
-                        quick_reply=get_quick_reply() # 加入按鈕
+                        quick_reply=get_quick_reply(user_id) # 加入按鈕
                     )
                 )
-        # --- 4. 處理一般對話 ---
+        # --- 處理一般對話 ---
         else:
             line_bot_api.reply_message(
                 event.reply_token, 
                 TextSendMessage(
                     text=response.text,
-                    quick_reply=get_quick_reply() # 加入按鈕
+                    quick_reply=get_quick_reply(user_id) # 加入按鈕
                 )
             )
 
@@ -428,7 +471,7 @@ def handle_message(event):
             event.reply_token, 
             TextSendMessage(
                 text="系統忙碌中，請稍後再試。",
-                quick_reply=get_quick_reply() # 加入按鈕
+                quick_reply=get_quick_reply(user_id) # 加入按鈕
             )
         )
 
