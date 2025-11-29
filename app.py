@@ -5,7 +5,12 @@ import json
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+# --- 修改：加入 Flex Message 相關元件 ---
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, 
+    FlexSendMessage, BubbleContainer, BoxComponent, 
+    TextComponent, ButtonComponent, URIAction
+)
 
 import google.generativeai as genai
 from google_auth_oauthlib.flow import Flow
@@ -32,8 +37,8 @@ FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS")
 # --- 關鍵修正：解決 LINE 瀏覽器 MismatchingStateError 問題 ---
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "random_secret_string")
 app.config['SESSION_COOKIE_SECURE'] = True  # 確保透過 HTTPS 傳輸 Cookie
-app.config['SESSION_COOKIE_SAMESITE'] = 'None' # 允許跨站傳輸 (解決 LINE 瀏覽器阻擋問題)
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1' # Render 內部轉發需要
+app.config['SESSION_COOKIE_SAMESITE'] = 'None' # 允許跨站傳輸
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 # 檢查變數
 if not all([LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, FIREBASE_CREDENTIALS_JSON]):
@@ -110,10 +115,61 @@ def get_system_instruction():
     5. 回應時請使用繁體中文 (Traditional Chinese)。
     """
 
+# --- 新增：製作漂亮行程卡片的函式 ---
+def create_event_flex_message(event_data):
+    summary = event_data.get('summary', '無標題')
+    html_link = event_data.get('htmlLink')
+    
+    # 處理時間顯示
+    start = event_data['start']
+    if 'dateTime' in start:
+        time_str = start['dateTime'].replace('T', ' ')[:16] # 取到分就好
+    else:
+        time_str = f"{start['date']} (全天)"
+
+    bubble = BubbleContainer(
+        body=BoxComponent(
+            layout='vertical',
+            contents=[
+                TextComponent(text='📅 行程已建立', weight='bold', color='#1DB446', size='sm'),
+                TextComponent(text=summary, weight='bold', size='xl', margin='md', wrap=True),
+                BoxComponent(
+                    layout='vertical',
+                    margin='lg',
+                    spacing='sm',
+                    contents=[
+                        BoxComponent(
+                            layout='baseline',
+                            spacing='sm',
+                            contents=[
+                                TextComponent(text='時間', color='#aaaaaa', size='sm', flex=1),
+                                TextComponent(text=time_str, wrap=True, color='#666666', size='sm', flex=5)
+                            ],
+                        ),
+                    ],
+                )
+            ],
+        ),
+        footer=BoxComponent(
+            layout='vertical',
+            spacing='sm',
+            contents=[
+                # 編輯按鈕
+                ButtonComponent(
+                    style='link',
+                    height='sm',
+                    action=URIAction(label='編輯 / 查看行程', uri=html_link)
+                )
+            ],
+            flex=0
+        )
+    )
+    return FlexSendMessage(alt_text=f"已建立行程：{summary}", contents=bubble)
+
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Secure Cookie Bot", 200
+    return "OK - Secure Cookie Bot with Flex Message", 200
 
 @app.route("/login")
 def login():
@@ -148,7 +204,7 @@ def login():
 
 @app.route("/oauth2callback")
 def oauth2callback():
-    # 檢查 state 是否存在 (解決 MismatchingStateError)
+    # 檢查 state 是否存在
     if 'state' not in session:
         return "錯誤：瀏覽器 Session 失效。請嘗試「複製連結」並在 Chrome/Safari 瀏覽器中開啟以完成登入。"
         
@@ -174,7 +230,6 @@ def oauth2callback():
         flow.fetch_token(authorization_response=request.url)
         creds = flow.credentials
         
-        # 檢查是否有 refresh_token
         if not creds.refresh_token:
             logging.warning("警告：Google 未回傳 refresh_token")
         
@@ -210,7 +265,7 @@ def callback():
         abort(400)
     return "OK"
 
-# --- 執行 Calendar API ---
+# --- 執行 Calendar API (修改版：建立行程回傳字典) ---
 def execute_calendar_api(user_id, function_name, args):
     creds_info = get_user_credentials(user_id)
     if not creds_info or not creds_info.get('refresh_token'):
@@ -219,11 +274,10 @@ def execute_calendar_api(user_id, function_name, args):
     creds = Credentials.from_authorized_user_info(creds_info)
     
     try:
-        # 如果 token 過期，自動 refresh
+        # 自動 refresh token
         if creds.expired and creds.refresh_token:
             from google.auth.transport.requests import Request
             creds.refresh(Request())
-            # 更新資料庫裡的新 token
             creds_data = {
                 'token': creds.token,
                 'refresh_token': creds.refresh_token,
@@ -255,7 +309,8 @@ def execute_calendar_api(user_id, function_name, args):
                 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'},
             }
             created_event = service.events().insert(calendarId='primary', body=event).execute()
-            return f"成功建立行程：{created_event.get('htmlLink')}"
+            # 【修改】直接回傳整個 event 物件
+            return created_event
             
         elif function_name == "get_calendar_events":
             now = datetime.datetime.utcnow().isoformat() + 'Z'
@@ -280,7 +335,7 @@ def execute_calendar_api(user_id, function_name, args):
 
     except Exception as e:
         logging.error(f"Google API Error: {e}")
-        return f"執行錯誤：{str(e)}。可能需要重新輸入「登入」。"
+        return f"執行錯誤：{str(e)}"
     
     return "未知的操作。"
 
@@ -291,7 +346,6 @@ def handle_message(event):
 
     if user_msg in ["登入", "綁定", "連結Google"]:
         login_url = url_for('login', userid=user_id, _external=True)
-        # 加入 openExternalBrowser=1 參數，嘗試強制讓 LINE 使用外部瀏覽器開啟 (這招在 LINE 有效)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定 (若失敗請複製連結到 Chrome 開啟)：\n{login_url}"))
         return
 
@@ -307,22 +361,38 @@ def handle_message(event):
             
             api_result = execute_calendar_api(user_id, func_name, func_args)
             
-            response_part = {
-                "function_response": {
-                    "name": func_name,
-                    "response": {"result": api_result}
+            # --- 判斷是否為建立成功的行程 (回傳是字典且有連結) ---
+            if isinstance(api_result, dict) and 'htmlLink' in api_result:
+                # 1. 製作漂亮卡片
+                flex_msg = create_event_flex_message(api_result)
+                # 2. 回傳卡片
+                line_bot_api.reply_message(event.reply_token, flex_msg)
+                
+                # 3. 安靜地回報給 Gemini 說做完了 (不印出它的文字回應，避免重複)
+                response_part = {
+                    "function_response": {
+                        "name": func_name,
+                        "response": {"result": "Event created successfully."}
+                    }
                 }
-            }
-            final_response = chat.send_message(response_part)
-            reply_text = final_response.text
+                chat.send_message(response_part)
+                
+            else:
+                # 如果是查詢行程或其他狀況 (回傳是字串)，照舊處理
+                response_part = {
+                    "function_response": {
+                        "name": func_name,
+                        "response": {"result": api_result}
+                    }
+                }
+                final_response = chat.send_message(response_part)
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=final_response.text))
         else:
-            reply_text = response.text
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response.text))
 
     except Exception as e:
         logging.exception("Gemini Error")
-        reply_text = "系統忙碌中，請稍後再試。"
-
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統忙碌中，請稍後再試。"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
