@@ -6,11 +6,13 @@ import requests # 用來強制發送動畫請求
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
+# --- 修改：加入 CarouselContainer ---
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
     FlexSendMessage, BubbleContainer, BoxComponent, 
     TextComponent, ButtonComponent, URIAction,
-    QuickReply, QuickReplyButton, MessageAction
+    QuickReply, QuickReplyButton, MessageAction,
+    CarouselContainer
 )
 
 import google.generativeai as genai
@@ -207,7 +209,7 @@ def get_system_instruction(style=None):
     
     return base_instruction
 
-# --- Quick Reply ---
+# --- Quick Reply (修改：登入/登出放最後) ---
 def get_quick_reply(user_id):
     creds = get_user_credentials(user_id)
     is_logged_in = creds and creds.get('refresh_token')
@@ -231,8 +233,8 @@ def get_quick_reply(user_id):
 
     return QuickReply(items=items)
 
-# --- Flex Message (日曆) ---
-def create_event_flex_message(event_data):
+# --- 修改：只回傳 BubbleContainer 以支援 Carousel ---
+def create_event_bubble(event_data):
     summary = event_data.get('summary', '無標題')
     html_link = event_data.get('htmlLink')
     start = event_data['start']
@@ -241,7 +243,7 @@ def create_event_flex_message(event_data):
     else:
         time_str = f"{start['date']} (全天)"
 
-    bubble = BubbleContainer(
+    return BubbleContainer(
         body=BoxComponent(
             layout='vertical',
             contents=[
@@ -272,15 +274,14 @@ def create_event_flex_message(event_data):
             flex=0
         )
     )
-    return FlexSendMessage(alt_text=f"已建立行程：{summary}", contents=bubble)
 
-# --- [新增] Flex Message (記帳) ---
-def create_accounting_flex_message(data):
+# --- 修改：只回傳 BubbleContainer 以支援 Carousel ---
+def create_accounting_bubble(data):
     is_income = data.get('type') == 'income'
     color = '#10b981' if is_income else '#ef4444'
     sign = '+' if is_income else '-'
     
-    bubble = BubbleContainer(
+    return BubbleContainer(
         body=BoxComponent(
             layout='vertical',
             contents=[
@@ -309,13 +310,12 @@ def create_accounting_flex_message(data):
             ],
         )
     )
-    return FlexSendMessage(alt_text=f"記帳成功：{data.get('item')}", contents=bubble)
 
 
 # --- Routes ---
 @app.route("/")
 def home():
-    return "OK - Bot with Accounting Integration", 200
+    return "OK - Bot with Carousel & Animation", 200
 
 @app.route("/login")
 def login():
@@ -465,7 +465,6 @@ def handle_message(event):
             "chatId": user_id,
             "loadingSeconds": 20 # 動畫顯示秒數，回覆訊息後會自動消失
         }
-        # 強制發送 HTTP 請求，跳過 SDK 版本檢查
         requests.post(url, headers=headers, json=data)
     except Exception as e:
         logging.warning(f"Failed to send loading animation: {e}")
@@ -529,52 +528,74 @@ def handle_message(event):
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
-        if response.parts and response.parts[0].function_call:
-            fc = response.parts[0].function_call
-            func_name = fc.name
-            func_args = dict(fc.args)
-            
-            api_result = execute_api_logic(user_id, func_name, func_args)
-            
-            if isinstance(api_result, dict):
-                if api_result.get('action') == 'accounting':
-                    flex_msg = create_accounting_flex_message(api_result['data'])
-                    flex_msg.quick_reply = get_quick_reply(user_id)
-                    line_bot_api.reply_message(event.reply_token, flex_msg)
+        # --- 修改：支援 Carousel 顯示多個結果 ---
+        flex_bubbles = []
+        text_responses = []
+
+        if response.parts:
+            for part in response.parts:
+                if part.function_call:
+                    fc = part.function_call
+                    func_name = fc.name
+                    func_args = dict(fc.args)
                     
-                    save_chat_history(user_id, user_msg, f"已記帳：{api_result['data']['item']} {api_result['data']['amount']}")
+                    # 執行 API
+                    api_result = execute_api_logic(user_id, func_name, func_args)
+                    
+                    # 處理結果並製作 Bubble
+                    if isinstance(api_result, dict):
+                        if api_result.get('action') == 'accounting':
+                            bubble = create_accounting_bubble(api_result['data'])
+                            flex_bubbles.append(bubble)
+                            save_chat_history(user_id, user_msg, f"已記帳：{api_result['data']['item']} {api_result['data']['amount']}")
+                            
+                        elif api_result.get('action') == 'calendar_create':
+                            bubble = create_event_bubble(api_result)
+                            flex_bubbles.append(bubble)
+                            save_chat_history(user_id, user_msg, f"已建立行程：{api_result.get('summary')}")
+                        
+                        else:
+                            text_responses.append(str(api_result))
+                    else:
+                        text_responses.append(str(api_result))
+                        
+                    # 回報給 Gemini (讓記憶同步)
                     chat.send_message({
                         "function_response": {
                             "name": func_name,
-                            "response": {"result": "Accounting success."}
+                            "response": {"result": "Success" if isinstance(api_result, dict) else str(api_result)}
                         }
                     })
-                    
-                elif api_result.get('action') == 'calendar_create':
-                    flex_msg = create_event_flex_message(api_result)
-                    flex_msg.quick_reply = get_quick_reply(user_id)
-                    line_bot_api.reply_message(event.reply_token, flex_msg)
-                    
-                    save_chat_history(user_id, user_msg, f"已建立行程：{api_result.get('summary')}")
-                    chat.send_message({
-                        "function_response": {
-                            "name": func_name,
-                            "response": {"result": "Event created success."}
-                        }
-                    })
-                else:
-                    response_part = {"function_response": {"name": func_name, "response": {"result": api_result}}}
-                    final_res = chat.send_message(response_part)
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=final_res.text, quick_reply=get_quick_reply(user_id)))
-                    save_chat_history(user_id, user_msg, final_res.text)
+
+                elif part.text:
+                    # 純文字回應
+                    text_responses.append(part.text)
+                    save_chat_history(user_id, user_msg, part.text)
+
+        # --- 組合最終回應 ---
+        reply_messages = []
+        
+        # 1. 卡片處理 (Carousel 或 單張)
+        if flex_bubbles:
+            if len(flex_bubbles) > 1:
+                container = CarouselContainer(contents=flex_bubbles)
+                reply_messages.append(FlexSendMessage(alt_text="處理結果", contents=container))
             else:
-                response_part = {"function_response": {"name": func_name, "response": {"result": api_result}}}
-                final_res = chat.send_message(response_part)
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=final_res.text, quick_reply=get_quick_reply(user_id)))
-                save_chat_history(user_id, user_msg, final_res.text)
+                reply_messages.append(FlexSendMessage(alt_text="處理結果", contents=flex_bubbles[0]))
+        
+        # 2. 文字處理
+        if text_responses:
+            combined_text = "\n".join(text_responses).strip()
+            if combined_text:
+                reply_messages.append(TextSendMessage(text=combined_text))
+
+        # 3. 發送訊息
+        if reply_messages:
+            # 只在最後一則加上 Quick Reply
+            reply_messages[-1].quick_reply = get_quick_reply(user_id)
+            line_bot_api.reply_message(event.reply_token, reply_messages)
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response.text, quick_reply=get_quick_reply(user_id)))
-            save_chat_history(user_id, user_msg, response.text)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="處理完成", quick_reply=get_quick_reply(user_id)))
 
     except Exception as e:
         logging.exception("Error")
