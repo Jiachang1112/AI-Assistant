@@ -99,30 +99,6 @@ def save_user_style(user_id, style):
     except Exception as e:
         logging.error(f"儲存風格失敗: {e}")
 
-# --- [新增] 狀態與模型管理 ---
-def set_user_state(user_id, state):
-    try:
-        db.collection('users').document(user_id).set({'state': state}, merge=True)
-    except: pass
-
-def get_user_state(user_id):
-    try:
-        doc = db.collection('users').document(user_id).get()
-        return doc.to_dict().get('state') if doc.exists else None
-    except: return None
-
-def set_user_model_pref(user_id, model_name):
-    try:
-        db.collection('users').document(user_id).set({'model_pref': model_name}, merge=True)
-    except: pass
-
-def get_user_model_pref(user_id):
-    try:
-        doc = db.collection('users').document(user_id).get()
-        return doc.to_dict().get('model_pref') if doc.exists else "gemini-2.0-flash"
-    except: return "gemini-2.0-flash"
-
-
 def get_chat_history(user_id):
     try:
         doc = db.collection('users').document(user_id).get()
@@ -186,6 +162,9 @@ def get_default_ledger_id(user_id):
 
 # --- Tools 定義 ---
 def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
+    """
+    在 Google 日曆建立行程。
+    """
     return "Event creation request received."
 
 def get_calendar_events(time_min: str = None):
@@ -222,7 +201,6 @@ def get_quick_reply(user_id):
     creds = get_user_credentials(user_id)
     is_logged_in = creds and creds.get('refresh_token')
     items = [
-        QuickReplyButton(action=MessageAction(label="🔄 切換模型", text="切換模型")),
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
         QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
@@ -235,7 +213,7 @@ def get_quick_reply(user_id):
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- Flex Message (日曆) ---
+# --- 修改：日曆 Flex Message (縮小圖示、保留右側文字) ---
 def create_event_bubble(event_data):
     summary = event_data.get('summary') or event_data.get('title') or '未命名行程'
     html_link = event_data.get('htmlLink')
@@ -254,7 +232,9 @@ def create_event_bubble(event_data):
             backgroundColor='#1DB446',
             paddingAll='15px',
             contents=[
+                # 圖示縮小為 3xl
                 TextComponent(text='📅', size='3xl', flex=0, align='center', gravity='center'),
+                # 標題靠左對齊圖示，顯示「行程已建立」
                 TextComponent(
                     text='行程已建立', 
                     weight='bold', 
@@ -298,7 +278,7 @@ def create_event_bubble(event_data):
         )
     )
 
-# --- Flex Message (記帳) ---
+# --- 修改：記帳 Flex Message (縮小圖示、保留右側文字) ---
 def create_accounting_bubble(data):
     is_income = data.get('type') == 'income'
     theme_color = '#10b981' if is_income else '#ef4444'
@@ -312,7 +292,9 @@ def create_accounting_bubble(data):
             backgroundColor=theme_color,
             paddingAll='15px',
             contents=[
+                # 圖示縮小為 3xl
                 TextComponent(text=icon, size='3xl', flex=0, align='center', gravity='center'),
+                # 標題靠左對齊圖示
                 TextComponent(
                     text=title_text, 
                     weight='bold', 
@@ -352,7 +334,6 @@ def create_accounting_bubble(data):
             ],
         )
     )
-
 
 # --- Routes ---
 @app.route("/")
@@ -416,32 +397,10 @@ def execute_api_logic(user_id, function_name, args):
         try:
             ledger_id = get_default_ledger_id(user_id)
             if not ledger_id: return "錯誤：無法取得帳本。"
-            
             now_iso = datetime.datetime.now().strftime("%Y-%m-%d")
-            entry_data = {
-                'type': args.get('type', 'expense'),
-                'amount': float(args.get('amount', 0)),
-                'categoryId': args.get('category', '其他'),
-                'note': args.get('item', '') + ' ' + args.get('note', ''),
-                'date': now_iso,
-                'createdAt': firestore.SERVER_TIMESTAMP,
-                'updatedAt': firestore.SERVER_TIMESTAMP,
-                'source': 'line-bot'
-            }
-            
+            entry_data = {'type': args.get('type', 'expense'), 'amount': float(args.get('amount', 0)), 'categoryId': args.get('category', '其他'), 'note': args.get('item', '') + ' ' + args.get('note', ''), 'date': now_iso, 'createdAt': firestore.SERVER_TIMESTAMP, 'updatedAt': firestore.SERVER_TIMESTAMP, 'source': 'line-bot'}
             db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').add(entry_data)
-              
-            return {
-                'status': 'success',
-                'action': 'accounting',
-                'data': {
-                    'item': args.get('item', ''),
-                    'amount': entry_data['amount'],
-                    'category': entry_data['categoryId'],
-                    'type': entry_data['type'],
-                    'date': entry_data['date']
-                }
-            }
+            return {'status': 'success', 'action': 'accounting', 'data': {'item': args.get('item', ''), 'amount': entry_data['amount'], 'category': entry_data['categoryId'], 'type': entry_data['type'], 'date': entry_data['date']}}
         except Exception as e:
             logging.error(f"記帳失敗: {e}")
             return f"記帳錯誤: {e}"
@@ -461,13 +420,11 @@ def execute_api_logic(user_id, function_name, args):
             summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
             start_time = args.get('start_time')
             end_time = args.get('end_time')
-            
             if not end_time and start_time:
                 try:
                     dt = datetime.datetime.fromisoformat(start_time)
                     end_time = (dt + datetime.timedelta(hours=1)).isoformat()
                 except: pass
-            
             event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
             created_event = service.events().insert(calendarId='primary', body=event).execute()
             created_event['action'] = 'calendar_create'
@@ -485,7 +442,6 @@ def execute_api_logic(user_id, function_name, args):
                 summary = event.get('summary', '無標題')
                 result_text += f"- {start}: {summary}\n"
             return result_text
-            
     except Exception as e: return f"執行錯誤：{str(e)}"
     return "未知的操作。"
 
@@ -494,7 +450,6 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
-    # 載入動畫
     try:
         url = "https://api.line.me/v2/bot/chat/loading/start"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
@@ -503,50 +458,6 @@ def handle_message(event):
     except Exception as e:
         logging.warning(f"Failed to send loading animation: {e}")
 
-    # --- [新增] 狀態處理 (切換模型) ---
-    current_state = get_user_state(user_id)
-
-    if user_msg == "切換模型":
-        set_user_state(user_id, "WAITING_PWD")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🔒 請輸入管理員密碼："))
-        return
-
-    if current_state == "WAITING_PWD":
-        if user_msg == "Jiachang":
-            set_user_state(user_id, "SELECT_MODEL")
-            items = [
-                QuickReplyButton(action=MessageAction(label="Gemini 2.0 Flash", text="Gemini 2.0 Flash")),
-                QuickReplyButton(action=MessageAction(label="Gemini 1.5 Pro", text="Gemini 1.5 Pro")),
-                QuickReplyButton(action=MessageAction(label="Gemini 1.5 Flash", text="Gemini 1.5 Flash")),
-                QuickReplyButton(action=MessageAction(label="取消", text="取消"))
-            ]
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🔓 密碼正確！請選擇要切換的模型：", quick_reply=QuickReply(items=items)))
-        else:
-            set_user_state(user_id, "NORMAL")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🚫 密碼錯誤，已取消操作。", quick_reply=get_quick_reply(user_id)))
-        return
-
-    if current_state == "SELECT_MODEL":
-        if user_msg == "取消":
-            set_user_state(user_id, "NORMAL")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已取消。", quick_reply=get_quick_reply(user_id)))
-            return
-        
-        valid_models = {
-            "Gemini 2.0 Flash": "gemini-2.0-flash",
-            "Gemini 1.5 Pro": "gemini-1.5-pro",
-            "Gemini 1.5 Flash": "gemini-1.5-flash"
-        }
-        
-        if user_msg in valid_models:
-            set_user_model_pref(user_id, valid_models[user_msg])
-            set_user_state(user_id, "NORMAL")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"✅ 已切換為 {user_msg}", quick_reply=get_quick_reply(user_id)))
-            return
-        else:
-            set_user_state(user_id, "NORMAL")
-
-    # 一般按鈕指令
     if user_msg == "開啟記帳模式":
         msg = """📝 歡迎使用記帳模式！
 您可以直接輸入「午餐 100元」、「飲料 50」來記帳。
@@ -557,10 +468,7 @@ def handle_message(event):
 - 設定風格：溫柔秘書
 - 設定風格：嚴格會計
 (也可以自訂，例如「設定風格：傲嬌妹妹」)"""
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id))
-        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id)))
         return
 
     if user_msg.startswith("設定風格："):
@@ -598,17 +506,12 @@ def handle_message(event):
             for h in data.get('chat_history', []): history.append({"role": h['role'], "parts": [h['text']]})
 
         current_instruction = get_system_instruction(user_style)
-        
-        # 讀取模型偏好 (預設 gemini-2.0-flash)
-        model_name = get_user_model_pref(user_id)
-        model = genai.GenerativeModel(model_name, tools=tools_list, system_instruction=current_instruction)
-        
+        model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=current_instruction)
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
         flex_bubbles = []
         text_responses = []
-        func_response_parts = []
 
         if response.parts:
             for part in response.parts:
@@ -616,9 +519,7 @@ def handle_message(event):
                     fc = part.function_call
                     fname = fc.name
                     fargs = dict(fc.args)
-                    
                     api_result = execute_api_logic(user_id, fname, fargs)
-                    
                     if isinstance(api_result, dict):
                         if api_result.get('action') == 'accounting':
                             flex_bubbles.append(create_accounting_bubble(api_result['data']))
@@ -630,23 +531,10 @@ def handle_message(event):
                             text_responses.append(str(api_result))
                     else:
                         text_responses.append(str(api_result))
-                    
-                    func_response_parts.append({
-                        "function_response": {
-                            "name": fname,
-                            "response": {"result": "Success" if isinstance(api_result, dict) else str(api_result)}
-                        }
-                    })
-
+                    chat.send_message({"function_response": {"name": fname, "response": {"result": "Success" if isinstance(api_result, dict) else str(api_result)}}})
                 elif part.text:
                     text_responses.append(part.text)
                     save_chat_history(user_id, user_msg, part.text)
-
-        if func_response_parts:
-            follow_up = chat.send_message(func_response_parts)
-            if follow_up.text:
-                text_responses.append(follow_up.text)
-                save_chat_history(user_id, "System", follow_up.text)
 
         reply_messages = []
         if flex_bubbles:
