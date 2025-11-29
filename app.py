@@ -11,7 +11,7 @@ from linebot.models import (
     FlexSendMessage, BubbleContainer, BoxComponent, 
     TextComponent, ButtonComponent, URIAction,
     QuickReply, QuickReplyButton, MessageAction,
-    CarouselContainer, ImageComponent
+    CarouselContainer
 )
 
 import google.generativeai as genai
@@ -218,9 +218,10 @@ def get_quick_reply(user_id):
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- 修改：日曆 Flex Message (放大圖示、優化標題) ---
+# --- [修改] 精緻化：日曆 Flex Message (解決未命名與樣式優化) ---
 def create_event_bubble(event_data):
-    summary = event_data.get('summary', '未命名行程')
+    # 修正：嘗試多種可能的 Key 來獲取標題，避免「未命名」
+    summary = event_data.get('title') or event_data.get('summary') or event_data.get('event_name') or '未命名行程'
     html_link = event_data.get('htmlLink')
     start = event_data['start']
     
@@ -234,10 +235,13 @@ def create_event_bubble(event_data):
     return BubbleContainer(
         header=BoxComponent(
             layout='horizontal',
-            backgroundColor='#1DB446',
+            backgroundColor='#1DB446', # LINE 綠色
             paddingAll='15px',
             contents=[
-                TextComponent(text='📅 行程已建立', weight='bold', color='#ffffff', size='lg', flex=1, align='start')
+                # 大圖示
+                TextComponent(text='📅', size='xxl', flex=0, align='center'),
+                # 標題靠右
+                TextComponent(text='行程已建立', weight='bold', color='#ffffff', size='lg', align='end', gravity='center', flex=1)
             ]
         ),
         body=BoxComponent(
@@ -271,11 +275,13 @@ def create_event_bubble(event_data):
         )
     )
 
-# --- 修改：記帳 Flex Message ---
+# --- [修改] 精緻化：記帳 Flex Message ---
 def create_accounting_bubble(data):
     is_income = data.get('type') == 'income'
-    theme_color = '#10b981' if is_income else '#ef4444'
+    theme_color = '#10b981' if is_income else '#ef4444' # 收入綠色，支出紅色
     sign = '+' if is_income else '-'
+    icon = '💰' if is_income else '💸'
+    title_text = '收入入帳' if is_income else '支出記帳'
     
     return BubbleContainer(
         header=BoxComponent(
@@ -283,7 +289,8 @@ def create_accounting_bubble(data):
             backgroundColor=theme_color,
             paddingAll='15px',
             contents=[
-                TextComponent(text='💰 記帳完成', weight='bold', color='#ffffff', size='lg', flex=1, align='start')
+                TextComponent(text=icon, size='xxl', flex=0, align='center'),
+                TextComponent(text=title_text, weight='bold', color='#ffffff', size='lg', align='end', gravity='center', flex=1)
             ]
         ),
         body=BoxComponent(
