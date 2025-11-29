@@ -90,7 +90,7 @@ def get_user_credentials(user_id):
         logging.error(f"讀取 Firebase 失敗: {e}")
         return None
 
-# 刪除使用者資料 (登出用 - 會一併刪除 Token 和 記憶)
+# 刪除使用者資料 (登出用)
 def delete_user_credentials(user_id):
     try:
         db.collection('users').document(user_id).delete()
@@ -262,7 +262,7 @@ def create_event_flex_message(event_data):
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Bot with Permanent Memory", 200
+    return "OK - Bot is running", 200
 
 @app.route("/login")
 def login():
@@ -500,17 +500,25 @@ def handle_message(event):
         )
         return
 
+    # --- 3. 顯示載入中動畫 (Loading Animation) ---
     try:
-        # --- 3. 讀取歷史記憶 ---
+        # loading_seconds 是動畫顯示的最大秒數
+        line_bot_api.show_loading_animation(chat_id=user_id, loading_seconds=20)
+    except Exception as e:
+        # 如果顯示失敗 (例如官方限制)，只紀錄 Log，不影響主程式運行
+        logging.warning(f"Failed to send loading animation: {e}")
+
+    try:
+        # --- 4. 讀取歷史記憶 ---
         history = get_chat_history(user_id)
 
-        # --- 4. 呼叫 Gemini (帶有記憶) ---
+        # --- 5. 呼叫 Gemini (帶有記憶) ---
         model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=get_system_instruction())
         # 將 history 餵給 start_chat
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
-        # --- 5. 處理 Function Call ---
+        # --- 6. 處理 Function Call ---
         if response.parts and response.parts[0].function_call:
             fc = response.parts[0].function_call
             func_name = fc.name
@@ -552,7 +560,7 @@ def handle_message(event):
                 # 將「使用者指令」與「AI 最終回應」存入記憶
                 save_chat_history(user_id, user_msg, final_response.text)
 
-        # --- 6. 處理一般對話 ---
+        # --- 7. 處理一般對話 ---
         else:
             line_bot_api.reply_message(
                 event.reply_token, 
