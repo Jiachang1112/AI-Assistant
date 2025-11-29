@@ -6,13 +6,12 @@ import requests # 用來強制發送動畫請求
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-# --- 加入 CarouselContainer ---
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
     FlexSendMessage, BubbleContainer, BoxComponent, 
     TextComponent, ButtonComponent, URIAction,
     QuickReply, QuickReplyButton, MessageAction,
-    CarouselContainer
+    CarouselContainer, ImageComponent
 )
 
 import google.generativeai as genai
@@ -97,7 +96,6 @@ def save_user_style(user_id, style):
     try:
         doc_ref = db.collection('users').document(user_id)
         doc_ref.set({'reply_style': style}, merge=True)
-        logging.info(f"使用者 {user_id} 風格已設定為: {style}")
     except Exception as e:
         logging.error(f"儲存風格失敗: {e}")
 
@@ -162,7 +160,16 @@ def get_default_ledger_id(user_id):
         logging.error(f"取得帳本失敗: {e}")
         return None
 
-def create_calendar_event(title: str, start_time: str, end_time: str, description: str = ""):
+# --- Tools 定義 (修正參數接收) ---
+def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
+    """
+    在 Google 日曆建立行程。
+    Args:
+        title: 行程標題
+        start_time: 開始時間 (ISO 8601)
+        end_time: 結束時間 (ISO 8601)
+        description: 行程描述
+    """
     return "Event creation request received."
 
 def get_calendar_events(time_min: str = None):
@@ -173,7 +180,6 @@ def add_accounting_entry(item: str, amount: float, category: str = "其他", typ
 
 tools_list = [create_calendar_event, get_calendar_events, add_accounting_entry]
 
-# --- 修改：指令更強硬，強制執行不反問 ---
 def get_system_instruction(style=None):
     utc_now = datetime.datetime.utcnow()
     taipei_time = utc_now + datetime.timedelta(hours=8)
@@ -183,13 +189,11 @@ def get_system_instruction(style=None):
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
     【最高指導原則 - 直接執行】
-    1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，**請直接呼叫 `Calendar` 工具，絕對不要反問使用者細節。**
-       - 如果使用者沒說結束時間，請不用問，直接不用填 (後端會自動預設為 1 小時)。
-       - 如果使用者沒說標題，請不用問，直接用「未命名行程」。
+    1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，請直接呼叫 `Calendar` 工具。
+       - **非常重要**：如果使用者說「開會」，title 參數就填「開會」；說「買菜」，title 就填「買菜」。絕對不要填「未命名行程」。
+       - 如果使用者沒說結束時間，請不用問，直接不用填。
     
-    2. 當使用者輸入金額、品項（例如：午餐 100），請務必呼叫 `add_accounting_entry` tool。
-       - 若是花錢，type 為 'expense'；若是賺錢，type 為 'income'。
-       - 請自動推斷 category。
+    2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
 
     3. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
     4. 回應時請使用繁體中文 (Traditional Chinese)。
@@ -214,29 +218,32 @@ def get_quick_reply(user_id):
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- 精緻化：日曆 Flex Message (加上頂部色條) ---
+# --- 修改：日曆 Flex Message (放大圖示、優化標題) ---
 def create_event_bubble(event_data):
-    summary = event_data.get('summary', '無標題')
+    summary = event_data.get('summary', '未命名行程')
     html_link = event_data.get('htmlLink')
     start = event_data['start']
+    
+    time_str = ""
     if 'dateTime' in start:
-        time_str = start['dateTime'].replace('T', ' ')[:16]
+        dt = datetime.datetime.fromisoformat(start['dateTime'])
+        time_str = dt.strftime('%Y-%m-%d %H:%M')
     else:
         time_str = f"{start['date']} (全天)"
 
     return BubbleContainer(
         header=BoxComponent(
-            layout='vertical',
+            layout='horizontal',
             backgroundColor='#1DB446',
-            paddingAll='12px',
+            paddingAll='15px',
             contents=[
-                TextComponent(text='📅 行程已建立', weight='bold', color='#ffffff', size='sm')
+                TextComponent(text='📅 行程已建立', weight='bold', color='#ffffff', size='lg', flex=1, align='start')
             ]
         ),
         body=BoxComponent(
             layout='vertical',
             contents=[
-                TextComponent(text=summary, weight='bold', size='xxl', margin='md', wrap=True, color='#111111'),
+                TextComponent(text=summary, weight='bold', size='3xl', margin='md', wrap=True, color='#111111'),
                 BoxComponent(
                     layout='vertical', margin='lg', spacing='sm',
                     contents=[
@@ -244,7 +251,7 @@ def create_event_bubble(event_data):
                             layout='baseline', spacing='sm',
                             contents=[
                                 TextComponent(text='時間', color='#aaaaaa', size='sm', flex=1),
-                                TextComponent(text=time_str, wrap=True, color='#666666', size='sm', flex=4, weight="bold")
+                                TextComponent(text=time_str, wrap=True, color='#666666', size='md', flex=4, weight="bold")
                             ],
                         ),
                     ],
@@ -264,7 +271,7 @@ def create_event_bubble(event_data):
         )
     )
 
-# --- 精緻化：記帳 Flex Message (加上收入支出色條) ---
+# --- 修改：記帳 Flex Message ---
 def create_accounting_bubble(data):
     is_income = data.get('type') == 'income'
     theme_color = '#10b981' if is_income else '#ef4444'
@@ -272,11 +279,11 @@ def create_accounting_bubble(data):
     
     return BubbleContainer(
         header=BoxComponent(
-            layout='vertical',
+            layout='horizontal',
             backgroundColor=theme_color,
-            paddingAll='12px',
+            paddingAll='15px',
             contents=[
-                TextComponent(text='💰 記帳完成', weight='bold', color='#ffffff', size='sm')
+                TextComponent(text='💰 記帳完成', weight='bold', color='#ffffff', size='lg', flex=1, align='start')
             ]
         ),
         body=BoxComponent(
@@ -310,7 +317,7 @@ def create_accounting_bubble(data):
 # --- Routes ---
 @app.route("/")
 def home():
-    return "OK - Bot with Aggressive Event Creation", 200
+    return "OK - Bot Running", 200
 
 @app.route("/login")
 def login():
@@ -364,6 +371,7 @@ def execute_api_logic(user_id, function_name, args):
     if not creds_info or not creds_info.get('refresh_token'):
         return "錯誤：請先登入。"
 
+    # 記帳
     if function_name == "add_accounting_entry":
         try:
             ledger_id = get_default_ledger_id(user_id)
@@ -398,6 +406,7 @@ def execute_api_logic(user_id, function_name, args):
             logging.error(f"記帳失敗: {e}")
             return f"記帳錯誤: {e}"
 
+    # 日曆
     creds = Credentials.from_authorized_user_info(creds_info)
     try:
         if creds.expired and creds.refresh_token:
@@ -409,11 +418,11 @@ def execute_api_logic(user_id, function_name, args):
         service = build('calendar', 'v3', credentials=creds)
         
         if function_name == "create_calendar_event":
-            summary = args.get('title', '未命名行程')
+            # 修正：優先使用 title，若無則用 summary 或 event_name，最後用 args 的第一個 key
+            summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
             start_time = args.get('start_time')
             end_time = args.get('end_time')
             
-            # --- 自動補全結束時間 (若 AI 沒給) ---
             if not end_time and start_time:
                 try:
                     dt = datetime.datetime.fromisoformat(start_time)
@@ -455,8 +464,19 @@ def handle_message(event):
         logging.warning(f"Failed to send loading animation: {e}")
 
     if user_msg == "開啟記帳模式":
-        msg = "📝 歡迎使用記帳模式！..."
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id)))
+        msg = """📝 歡迎使用記帳模式！
+您可以直接輸入「午餐 100元」、「飲料 50」來記帳。
+
+💡 您也可以調整我的回覆風格：
+請輸入以下指令：
+- 設定風格：毒舌管家
+- 設定風格：溫柔秘書
+- 設定風格：嚴格會計
+(也可以自訂，例如「設定風格：傲嬌妹妹」)"""
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id))
+        )
         return
 
     if user_msg.startswith("設定風格："):
