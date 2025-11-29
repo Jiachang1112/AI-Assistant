@@ -6,7 +6,6 @@ import requests # 用來強制發送動畫請求
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-# --- 修改：加入 CarouselContainer ---
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
     FlexSendMessage, BubbleContainer, BoxComponent, 
@@ -65,7 +64,7 @@ SCOPES = [
     'openid'
 ]
 
-# --- 資料庫操作 (Token & 風格) ---
+# --- 資料庫操作 ---
 def save_user_credentials(user_id, creds_data):
     try:
         doc_ref = db.collection('users').document(user_id)
@@ -100,7 +99,6 @@ def save_user_style(user_id, style):
     except Exception as e:
         logging.error(f"儲存風格失敗: {e}")
 
-# --- 資料庫操作 (記憶相關) ---
 def get_chat_history(user_id):
     try:
         doc = db.collection('users').document(user_id).get()
@@ -141,33 +139,23 @@ def clear_chat_history(user_id):
         logging.error(f"清空對話失敗: {e}")
         return False
 
-# --- [新增] 記帳相關資料庫操作 ---
-
-# 1. 取得預設帳本 ID
+# --- 核心邏輯 ---
 def get_default_ledger_id(user_id):
     try:
         ledgers_ref = db.collection('users').document(user_id).collection('ledgers')
-        
         q_default = ledgers_ref.where('isDefault', '==', True).limit(1)
         snap_default = q_default.get()
-        if snap_default:
-            return snap_default[0].id
-            
+        if snap_default: return snap_default[0].id
         q_first = ledgers_ref.order_by('createdAt').limit(1)
         snap_first = q_first.get()
-        if snap_first:
-            return snap_first[0].id
-            
+        if snap_first: return snap_first[0].id
+        
         new_ledger = {
-            'name': '預設帳本',
-            'currency': 'TWD',
-            'isDefault': True,
-            'createdAt': firestore.SERVER_TIMESTAMP,
-            'updatedAt': firestore.SERVER_TIMESTAMP
+            'name': '預設帳本', 'currency': 'TWD', 'isDefault': True,
+            'createdAt': firestore.SERVER_TIMESTAMP, 'updatedAt': firestore.SERVER_TIMESTAMP
         }
         update_time, ref = ledgers_ref.add(new_ledger)
         return ref.id
-        
     except Exception as e:
         logging.error(f"取得帳本失敗: {e}")
         return None
@@ -176,27 +164,17 @@ def get_default_ledger_id(user_id):
 def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
     """
     在 Google 日曆建立行程。
-    Args:
-        title: 行程標題
-        start_time: 開始時間 (ISO 8601)
-        end_time: 結束時間 (ISO 8601)
-        description: 行程描述
     """
     return "Event creation request received."
 
 def get_calendar_events(time_min: str = None):
     return "Calendar list request received."
 
-# [新增] 記帳 Tool
 def add_accounting_entry(item: str, amount: float, category: str = "其他", type: str = "expense", note: str = ""):
-    """
-    將記帳資料寫入使用者的預設帳本。
-    """
     return "Accounting request received."
 
 tools_list = [create_calendar_event, get_calendar_events, add_accounting_entry]
 
-# --- System Instruction ---
 def get_system_instruction(style=None):
     utc_now = datetime.datetime.utcnow()
     taipei_time = utc_now + datetime.timedelta(hours=8)
@@ -207,7 +185,7 @@ def get_system_instruction(style=None):
     
     【最高指導原則 - 直接執行】
     1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，請直接呼叫 `Calendar` 工具。
-       - **非常重要**：如果使用者說「開會」，title 參數就填「開會」；說「買菜」，title 就填「買菜」。絕對不要填「未命名行程」。
+       - 如果使用者說「開會」，title 參數就填「開會」。
        - 如果使用者沒說結束時間，請不用問，直接不用填。
     
     2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
@@ -215,17 +193,13 @@ def get_system_instruction(style=None):
     3. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
     4. 回應時請使用繁體中文 (Traditional Chinese)。
     """
-    
     if style:
         base_instruction += f"\n\n【語氣風格】請依照「{style}」的風格回應：\n{style}"
-    
     return base_instruction
 
-# --- Quick Reply ---
 def get_quick_reply(user_id):
     creds = get_user_credentials(user_id)
     is_logged_in = creds and creds.get('refresh_token')
-
     items = [
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
@@ -233,18 +207,15 @@ def get_quick_reply(user_id):
         QuickReplyButton(action=MessageAction(label="🗑️ 清空對話", text="清空對話")),
         QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
     ]
-
     if is_logged_in:
         items.append(QuickReplyButton(action=MessageAction(label="👋 登出", text="登出")))
     else:
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
-
     return QuickReply(items=items)
 
-# --- [修改] 精緻化：日曆 Flex Message (大圖示 + 標題) ---
+# --- 修改：日曆 Flex Message (縮小圖示、保留右側文字) ---
 def create_event_bubble(event_data):
-    # 修正：優先抓 title，避免未命名
-    summary = event_data.get('title') or event_data.get('summary') or event_data.get('event_name') or '未命名行程'
+    summary = event_data.get('summary') or event_data.get('title') or '未命名行程'
     html_link = event_data.get('htmlLink')
     start = event_data['start']
     
@@ -258,20 +229,20 @@ def create_event_bubble(event_data):
     return BubbleContainer(
         header=BoxComponent(
             layout='horizontal',
-            backgroundColor='#1DB446', # LINE 綠色
-            paddingAll='20px', # 加大內距
+            backgroundColor='#1DB446',
+            paddingAll='15px',
             contents=[
-                # 特大圖示
-                TextComponent(text='📅', size='5xl', flex=0, align='center', gravity='center'),
-                # 大標題
+                # 圖示縮小為 3xl
+                TextComponent(text='📅', size='3xl', flex=0, align='center', gravity='center'),
+                # 標題靠左對齊圖示，顯示「行程已建立」
                 TextComponent(
                     text='行程已建立', 
                     weight='bold', 
                     color='#ffffff', 
-                    size='xl', 
+                    size='lg', 
                     align='start', 
                     gravity='center', 
-                    margin='lg',
+                    margin='md',
                     flex=1
                 )
             ]
@@ -279,8 +250,7 @@ def create_event_bubble(event_data):
         body=BoxComponent(
             layout='vertical',
             contents=[
-                # 行程名稱特大
-                TextComponent(text=summary, weight='bold', size='4xl', margin='md', wrap=True, color='#111111'),
+                TextComponent(text=summary, weight='bold', size='3xl', margin='md', wrap=True, color='#111111'),
                 BoxComponent(
                     layout='vertical', margin='lg', spacing='sm',
                     contents=[
@@ -308,10 +278,10 @@ def create_event_bubble(event_data):
         )
     )
 
-# --- [修改] 精緻化：記帳 Flex Message (大圖示 + 標題) ---
+# --- 修改：記帳 Flex Message (縮小圖示、保留右側文字) ---
 def create_accounting_bubble(data):
     is_income = data.get('type') == 'income'
-    theme_color = '#10b981' if is_income else '#ef4444' # 收入綠色，支出紅色
+    theme_color = '#10b981' if is_income else '#ef4444'
     sign = '+' if is_income else '-'
     icon = '💰' if is_income else '💸'
     title_text = '收入入帳' if is_income else '支出記帳'
@@ -320,17 +290,19 @@ def create_accounting_bubble(data):
         header=BoxComponent(
             layout='horizontal',
             backgroundColor=theme_color,
-            paddingAll='20px',
+            paddingAll='15px',
             contents=[
-                TextComponent(text=icon, size='5xl', flex=0, align='center', gravity='center'),
+                # 圖示縮小為 3xl
+                TextComponent(text=icon, size='3xl', flex=0, align='center', gravity='center'),
+                # 標題靠左對齊圖示
                 TextComponent(
                     text=title_text, 
                     weight='bold', 
                     color='#ffffff', 
-                    size='xl', 
+                    size='lg', 
                     align='start', 
                     gravity='center', 
-                    margin='lg',
+                    margin='md',
                     flex=1
                 )
             ]
@@ -338,8 +310,8 @@ def create_accounting_bubble(data):
         body=BoxComponent(
             layout='vertical',
             contents=[
-                TextComponent(text=data.get('item', '未命名'), weight='bold', size='xxl', margin='md', color='#333333'),
-                TextComponent(text=f"{sign} ${data.get('amount')}", size='5xl', weight='bold', color=theme_color, margin='sm'),
+                TextComponent(text=data.get('item', '未命名'), weight='bold', size='xl', margin='md', color='#333333'),
+                TextComponent(text=f"{sign} ${data.get('amount')}", size='4xl', weight='bold', color=theme_color, margin='sm'),
                 BoxComponent(
                     layout='vertical', margin='lg', spacing='sm',
                     contents=[
@@ -425,32 +397,10 @@ def execute_api_logic(user_id, function_name, args):
         try:
             ledger_id = get_default_ledger_id(user_id)
             if not ledger_id: return "錯誤：無法取得帳本。"
-            
             now_iso = datetime.datetime.now().strftime("%Y-%m-%d")
-            entry_data = {
-                'type': args.get('type', 'expense'),
-                'amount': float(args.get('amount', 0)),
-                'categoryId': args.get('category', '其他'),
-                'note': args.get('item', '') + ' ' + args.get('note', ''),
-                'date': now_iso,
-                'createdAt': firestore.SERVER_TIMESTAMP,
-                'updatedAt': firestore.SERVER_TIMESTAMP,
-                'source': 'line-bot'
-            }
-            
+            entry_data = {'type': args.get('type', 'expense'), 'amount': float(args.get('amount', 0)), 'categoryId': args.get('category', '其他'), 'note': args.get('item', '') + ' ' + args.get('note', ''), 'date': now_iso, 'createdAt': firestore.SERVER_TIMESTAMP, 'updatedAt': firestore.SERVER_TIMESTAMP, 'source': 'line-bot'}
             db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').add(entry_data)
-              
-            return {
-                'status': 'success',
-                'action': 'accounting',
-                'data': {
-                    'item': args.get('item', ''),
-                    'amount': entry_data['amount'],
-                    'category': entry_data['categoryId'],
-                    'type': entry_data['type'],
-                    'date': entry_data['date']
-                }
-            }
+            return {'status': 'success', 'action': 'accounting', 'data': {'item': args.get('item', ''), 'amount': entry_data['amount'], 'category': entry_data['categoryId'], 'type': entry_data['type'], 'date': entry_data['date']}}
         except Exception as e:
             logging.error(f"記帳失敗: {e}")
             return f"記帳錯誤: {e}"
@@ -467,7 +417,6 @@ def execute_api_logic(user_id, function_name, args):
         service = build('calendar', 'v3', credentials=creds)
         
         if function_name == "create_calendar_event":
-            # 修正：優先使用 title，若無則用 summary 或 event_name，最後用 args 的第一個 key
             summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
             start_time = args.get('start_time')
             end_time = args.get('end_time')
@@ -493,7 +442,6 @@ def execute_api_logic(user_id, function_name, args):
                 summary = event.get('summary', '無標題')
                 result_text += f"- {start}: {summary}\n"
             return result_text
-            
     except Exception as e: return f"執行錯誤：{str(e)}"
     return "未知的操作。"
 
@@ -502,7 +450,6 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
-    # --- 0. 優先處理：載入動畫 (Loading Animation) ---
     try:
         url = "https://api.line.me/v2/bot/chat/loading/start"
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
@@ -511,7 +458,6 @@ def handle_message(event):
     except Exception as e:
         logging.warning(f"Failed to send loading animation: {e}")
 
-    # --- 1. 按鈕指令區 ---
     if user_msg == "開啟記帳模式":
         msg = """📝 歡迎使用記帳模式！
 您可以直接輸入「午餐 100元」、「飲料 50」來記帳。
@@ -522,10 +468,7 @@ def handle_message(event):
 - 設定風格：溫柔秘書
 - 設定風格：嚴格會計
 (也可以自訂，例如「設定風格：傲嬌妹妹」)"""
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id))
-        )
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id)))
         return
 
     if user_msg.startswith("設定風格："):
@@ -553,9 +496,7 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定：\n{login_url}", quick_reply=get_quick_reply(user_id)))
         return
 
-    # --- 2. Gemini 對話區 ---
     try:
-        # 讀取資料
         doc = db.collection('users').document(user_id).get()
         history = []
         user_style = None
@@ -569,7 +510,6 @@ def handle_message(event):
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
-        # --- 修改：支援 Carousel 顯示多個結果 ---
         flex_bubbles = []
         text_responses = []
 
@@ -579,44 +519,24 @@ def handle_message(event):
                     fc = part.function_call
                     fname = fc.name
                     fargs = dict(fc.args)
-                    
-                    # 執行 API
                     api_result = execute_api_logic(user_id, fname, fargs)
-                    
-                    # 處理結果並製作 Bubble
                     if isinstance(api_result, dict):
                         if api_result.get('action') == 'accounting':
-                            bubble = create_accounting_bubble(api_result['data'])
-                            flex_bubbles.append(bubble)
-                            save_chat_history(user_id, user_msg, f"已記帳：{api_result['data']['item']} {api_result['data']['amount']}")
-                            
+                            flex_bubbles.append(create_accounting_bubble(api_result['data']))
+                            save_chat_history(user_id, user_msg, f"已記帳：{api_result['data']['item']}")
                         elif api_result.get('action') == 'calendar_create':
-                            bubble = create_event_bubble(api_result)
-                            flex_bubbles.append(bubble)
+                            flex_bubbles.append(create_event_bubble(api_result))
                             save_chat_history(user_id, user_msg, f"已建立行程：{api_result.get('summary')}")
-                        
                         else:
                             text_responses.append(str(api_result))
                     else:
                         text_responses.append(str(api_result))
-                        
-                    # 回報給 Gemini (讓記憶同步)
-                    chat.send_message({
-                        "function_response": {
-                            "name": fname,
-                            "response": {"result": "Success" if isinstance(api_result, dict) else str(api_result)}
-                        }
-                    })
-
+                    chat.send_message({"function_response": {"name": fname, "response": {"result": "Success" if isinstance(api_result, dict) else str(api_result)}}})
                 elif part.text:
-                    # 純文字回應
                     text_responses.append(part.text)
                     save_chat_history(user_id, user_msg, part.text)
 
-        # --- 組合最終回應 ---
         reply_messages = []
-        
-        # 1. 卡片處理 (Carousel 或 單張)
         if flex_bubbles:
             if len(flex_bubbles) > 1:
                 container = CarouselContainer(contents=flex_bubbles)
@@ -624,15 +544,12 @@ def handle_message(event):
             else:
                 reply_messages.append(FlexSendMessage(alt_text="處理結果", contents=flex_bubbles[0]))
         
-        # 2. 文字處理
         if text_responses:
             combined_text = "\n".join(text_responses).strip()
             if combined_text:
                 reply_messages.append(TextSendMessage(text=combined_text))
 
-        # 3. 發送訊息
         if reply_messages:
-            # 只在最後一則加上 Quick Reply
             reply_messages[-1].quick_reply = get_quick_reply(user_id)
             line_bot_api.reply_message(event.reply_token, reply_messages)
         else:
