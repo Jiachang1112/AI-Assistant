@@ -5,11 +5,12 @@ import json
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-# --- 修改：加入 Flex Message 相關元件 ---
+# --- 修改：加入 QuickReply 相關元件 ---
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
     FlexSendMessage, BubbleContainer, BoxComponent, 
-    TextComponent, ButtonComponent, URIAction
+    TextComponent, ButtonComponent, URIAction,
+    QuickReply, QuickReplyButton, MessageAction
 )
 
 import google.generativeai as genai
@@ -115,6 +116,15 @@ def get_system_instruction():
     5. 回應時請使用繁體中文 (Traditional Chinese)。
     """
 
+# --- 新增：製作快速回覆按鈕 (Quick Reply) ---
+def get_quick_reply():
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
+        QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
+        QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")),
+        QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
+    ])
+
 # --- 新增：製作漂亮行程卡片的函式 ---
 def create_event_flex_message(event_data):
     summary = event_data.get('summary', '無標題')
@@ -169,7 +179,7 @@ def create_event_flex_message(event_data):
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Secure Cookie Bot with Flex Message", 200
+    return "OK - Bot with Quick Reply", 200
 
 @app.route("/login")
 def login():
@@ -265,7 +275,7 @@ def callback():
         abort(400)
     return "OK"
 
-# --- 執行 Calendar API (修改版：建立行程回傳字典) ---
+# --- 執行 Calendar API ---
 def execute_calendar_api(user_id, function_name, args):
     creds_info = get_user_credentials(user_id)
     if not creds_info or not creds_info.get('refresh_token'):
@@ -309,7 +319,7 @@ def execute_calendar_api(user_id, function_name, args):
                 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'},
             }
             created_event = service.events().insert(calendarId='primary', body=event).execute()
-            # 【修改】直接回傳整個 event 物件
+            # 回傳 event 物件以製作卡片
             return created_event
             
         elif function_name == "get_calendar_events":
@@ -344,16 +354,25 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
+    # --- 1. 處理登入綁定 ---
     if user_msg in ["登入", "綁定", "連結Google"]:
         login_url = url_for('login', userid=user_id, _external=True)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定 (若失敗請複製連結到 Chrome 開啟)：\n{login_url}"))
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(
+                text=f"請點擊連結進行綁定 (若失敗請複製連結到 Chrome 開啟)：\n{login_url}",
+                quick_reply=get_quick_reply()
+            )
+        )
         return
 
     try:
+        # --- 2. 呼叫 Gemini ---
         model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=get_system_instruction())
         chat = model.start_chat(enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
+        # --- 3. 處理 Function Call ---
         if response.parts and response.parts[0].function_call:
             fc = response.parts[0].function_call
             func_name = fc.name
@@ -361,14 +380,14 @@ def handle_message(event):
             
             api_result = execute_calendar_api(user_id, func_name, func_args)
             
-            # --- 判斷是否為建立成功的行程 (回傳是字典且有連結) ---
+            # (A) 如果是建立行程成功 (回傳字典)
             if isinstance(api_result, dict) and 'htmlLink' in api_result:
-                # 1. 製作漂亮卡片
                 flex_msg = create_event_flex_message(api_result)
-                # 2. 回傳卡片
+                flex_msg.quick_reply = get_quick_reply() # 加入按鈕
+                
                 line_bot_api.reply_message(event.reply_token, flex_msg)
                 
-                # 3. 安靜地回報給 Gemini 說做完了 (不印出它的文字回應，避免重複)
+                # 安靜回報給 Gemini
                 response_part = {
                     "function_response": {
                         "name": func_name,
@@ -377,8 +396,8 @@ def handle_message(event):
                 }
                 chat.send_message(response_part)
                 
+            # (B) 如果是查詢或其他結果 (回傳文字)
             else:
-                # 如果是查詢行程或其他狀況 (回傳是字串)，照舊處理
                 response_part = {
                     "function_response": {
                         "name": func_name,
@@ -386,13 +405,32 @@ def handle_message(event):
                     }
                 }
                 final_response = chat.send_message(response_part)
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=final_response.text))
+                line_bot_api.reply_message(
+                    event.reply_token, 
+                    TextSendMessage(
+                        text=final_response.text,
+                        quick_reply=get_quick_reply() # 加入按鈕
+                    )
+                )
+        # --- 4. 處理一般對話 ---
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=response.text))
+            line_bot_api.reply_message(
+                event.reply_token, 
+                TextSendMessage(
+                    text=response.text,
+                    quick_reply=get_quick_reply() # 加入按鈕
+                )
+            )
 
     except Exception as e:
         logging.exception("Gemini Error")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統忙碌中，請稍後再試。"))
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(
+                text="系統忙碌中，請稍後再試。",
+                quick_reply=get_quick_reply() # 加入按鈕
+            )
+        )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
