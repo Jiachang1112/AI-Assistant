@@ -2,6 +2,7 @@ import os
 import logging
 import datetime
 import json
+import requests # <--- 新增：用來強制發送動畫請求
 from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -37,8 +38,8 @@ FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS")
 
 # --- 關鍵修正：解決 LINE 瀏覽器 MismatchingStateError 問題 ---
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "random_secret_string")
-app.config['SESSION_COOKIE_SECURE'] = True  # 確保透過 HTTPS 傳輸 Cookie
-app.config['SESSION_COOKIE_SAMESITE'] = 'None' # 允許跨站傳輸
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 # 檢查變數
@@ -90,7 +91,7 @@ def get_user_credentials(user_id):
         logging.error(f"讀取 Firebase 失敗: {e}")
         return None
 
-# 刪除使用者資料 (登出用)
+# 刪除使用者資料 (登出用 - 會一併刪除 Token 和 記憶)
 def delete_user_credentials(user_id):
     try:
         db.collection('users').document(user_id).delete()
@@ -262,7 +263,7 @@ def create_event_flex_message(event_data):
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Bot is running", 200
+    return "OK - Bot with Forced Animation", 200
 
 @app.route("/login")
 def login():
@@ -500,12 +501,20 @@ def handle_message(event):
         )
         return
 
-    # --- 3. 顯示載入中動畫 (Loading Animation) ---
+    # --- 3. 顯示載入中動畫 (Loading Animation - 強制使用 requests 發送) ---
     try:
-        # loading_seconds 是動畫顯示的最大秒數
-        line_bot_api.show_loading_animation(chat_id=user_id, loading_seconds=20)
+        url = "https://api.line.me/v2/bot/chat/loading/start"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+        }
+        data = {
+            "chatId": user_id,
+            "loadingSeconds": 20 # 動畫顯示秒數，回覆訊息後會自動消失
+        }
+        # 強制發送 HTTP 請求，跳過 SDK 版本檢查
+        requests.post(url, headers=headers, json=data)
     except Exception as e:
-        # 如果顯示失敗 (例如官方限制)，只紀錄 Log，不影響主程式運行
         logging.warning(f"Failed to send loading animation: {e}")
 
     try:
@@ -534,7 +543,6 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, flex_msg)
                 
                 # 安靜回報給 Gemini (不需回應給用戶，因為已經送卡片了)
-                # 重要：這裡我們不存 Function Call 的詳細過程，只存「結果」給記憶
                 chat_result_text = f"已成功建立行程：{api_result.get('summary')}"
                 
                 # 將「使用者指令」與「執行結果」存入記憶
