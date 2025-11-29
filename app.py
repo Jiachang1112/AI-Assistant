@@ -68,11 +68,12 @@ SCOPES = [
     'openid'
 ]
 
-# --- 資料庫操作函式 ---
+# --- 資料庫操作 (Token 相關) ---
 def save_user_credentials(user_id, creds_data):
     try:
+        # 使用 set + merge=True，這樣才不會把聊天紀錄 chat_history 覆蓋掉
         doc_ref = db.collection('users').document(user_id)
-        doc_ref.set(creds_data)
+        doc_ref.set(creds_data, merge=True)
         logging.info(f"使用者 {user_id} 資料已儲存至 Firebase")
     except Exception as e:
         logging.error(f"儲存 Firebase 失敗: {e}")
@@ -89,7 +90,7 @@ def get_user_credentials(user_id):
         logging.error(f"讀取 Firebase 失敗: {e}")
         return None
 
-# 刪除使用者資料 (登出用)
+# 刪除使用者資料 (登出用 - 會一併刪除 Token 和 記憶)
 def delete_user_credentials(user_id):
     try:
         db.collection('users').document(user_id).delete()
@@ -97,6 +98,63 @@ def delete_user_credentials(user_id):
         return True
     except Exception as e:
         logging.error(f"刪除 Firebase 失敗: {e}")
+        return False
+
+# --- 資料庫操作 (記憶相關) ---
+def get_chat_history(user_id):
+    """從 Firebase 讀取對話紀錄"""
+    try:
+        doc = db.collection('users').document(user_id).get()
+        if doc.exists:
+            data = doc.to_dict()
+            # 取得 history 陣列
+            raw_history = data.get('chat_history', [])
+            
+            # 轉換成 Gemini SDK 接受的格式
+            gemini_history = []
+            for h in raw_history:
+                gemini_history.append({
+                    "role": h['role'],
+                    "parts": [h['text']]
+                })
+            return gemini_history
+        return []
+    except Exception as e:
+        logging.error(f"讀取對話紀錄失敗: {e}")
+        return []
+
+def save_chat_history(user_id, user_text, model_text):
+    """將最新的對話追加到 Firebase"""
+    try:
+        doc_ref = db.collection('users').document(user_id)
+        doc = doc_ref.get()
+        
+        current_history = []
+        if doc.exists:
+            current_history = doc.to_dict().get('chat_history', [])
+        
+        # 新增兩筆紀錄 (使用者一句、AI 一句)
+        current_history.append({"role": "user", "text": user_text})
+        current_history.append({"role": "model", "text": model_text})
+        
+        # 限制記憶長度 (例如只記住最近 20 句，避免 Token 爆炸或資料庫太大)
+        if len(current_history) > 20:
+            current_history = current_history[-20:]
+            
+        # 使用 merge=True 更新 chat_history 欄位
+        doc_ref.set({'chat_history': current_history}, merge=True)
+    except Exception as e:
+        logging.error(f"儲存對話紀錄失敗: {e}")
+
+def clear_chat_history(user_id):
+    """清空對話紀錄"""
+    try:
+        doc_ref = db.collection('users').document(user_id)
+        # 更新欄位為空陣列
+        doc_ref.set({'chat_history': []}, merge=True)
+        return True
+    except Exception as e:
+        logging.error(f"清空對話失敗: {e}")
         return False
 
 # --- 工具函式 (Tools) ---
@@ -130,7 +188,8 @@ def get_system_instruction():
 def get_quick_reply(user_id):
     # 先去資料庫檢查這個人是否已登入
     creds = get_user_credentials(user_id)
-    is_logged_in = creds is not None
+    # 判斷是否登入：檢查有沒有 refresh_token
+    is_logged_in = creds and creds.get('refresh_token')
 
     items = [
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
@@ -143,6 +202,8 @@ def get_quick_reply(user_id):
     else:
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
 
+    # 【新增】清空對話按鈕
+    items.append(QuickReplyButton(action=MessageAction(label="🗑️ 清空對話", text="清空對話")))
     items.append(QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")))
 
     return QuickReply(items=items)
@@ -201,7 +262,7 @@ def create_event_flex_message(event_data):
 # --- 路由 ---
 @app.route("/")
 def home():
-    return "OK - Bot is running", 200
+    return "OK - Bot with Permanent Memory", 200
 
 @app.route("/login")
 def login():
@@ -392,7 +453,19 @@ def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
 
-    # --- 新增功能：查詢 ID ---
+    # --- 功能指令：清空對話 ---
+    if user_msg == "清空對話":
+        clear_chat_history(user_id)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                text="🧹 對話記憶已清空！我們重新開始吧。",
+                quick_reply=get_quick_reply(user_id)
+            )
+        )
+        return
+
+    # --- 功能指令：查詢 ID ---
     if user_msg.lower() in ["id", "uid"]:
         line_bot_api.reply_message(
             event.reply_token,
@@ -428,12 +501,16 @@ def handle_message(event):
         return
 
     try:
-        # --- 3. 呼叫 Gemini ---
+        # --- 3. 讀取歷史記憶 ---
+        history = get_chat_history(user_id)
+
+        # --- 4. 呼叫 Gemini (帶有記憶) ---
         model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=get_system_instruction())
-        chat = model.start_chat(enable_automatic_function_calling=False)
+        # 將 history 餵給 start_chat
+        chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
-        # --- 處理 Function Call ---
+        # --- 5. 處理 Function Call ---
         if response.parts and response.parts[0].function_call:
             fc = response.parts[0].function_call
             func_name = fc.name
@@ -448,14 +525,12 @@ def handle_message(event):
                 
                 line_bot_api.reply_message(event.reply_token, flex_msg)
                 
-                # 安靜回報給 Gemini
-                response_part = {
-                    "function_response": {
-                        "name": func_name,
-                        "response": {"result": "Event created successfully."}
-                    }
-                }
-                chat.send_message(response_part)
+                # 安靜回報給 Gemini (不需回應給用戶，因為已經送卡片了)
+                # 重要：這裡我們不存 Function Call 的詳細過程，只存「結果」給記憶
+                chat_result_text = f"已成功建立行程：{api_result.get('summary')}"
+                
+                # 將「使用者指令」與「執行結果」存入記憶
+                save_chat_history(user_id, user_msg, chat_result_text)
                 
             # (B) 如果是查詢或其他結果 (回傳文字)
             else:
@@ -473,7 +548,11 @@ def handle_message(event):
                         quick_reply=get_quick_reply(user_id)
                     )
                 )
-        # --- 處理一般對話 ---
+                
+                # 將「使用者指令」與「AI 最終回應」存入記憶
+                save_chat_history(user_id, user_msg, final_response.text)
+
+        # --- 6. 處理一般對話 ---
         else:
             line_bot_api.reply_message(
                 event.reply_token, 
@@ -482,6 +561,8 @@ def handle_message(event):
                     quick_reply=get_quick_reply(user_id)
                 )
             )
+            # 將「使用者對話」與「AI 回應」存入記憶
+            save_chat_history(user_id, user_msg, response.text)
 
     except Exception as e:
         logging.exception("Gemini Error")
