@@ -93,9 +93,16 @@ def get_calendar_events(time_min: str = None):
 tools_list = [create_calendar_event, get_calendar_events]
 
 def get_system_instruction():
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 取得 UTC 時間，然後手動加 8 小時變成台灣時間
+    utc_now = datetime.datetime.utcnow()
+    taipei_time = utc_now + datetime.timedelta(hours=8)
+    
+    # 轉成字串
+    now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
+    
     return f"""
-    你是一個專業的 Google 日曆助理。現在時間是 {now}。
+    你是一個專業的 Google 日曆助理。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
+    
     1. 當使用者想「查詢」或「新增」行程時，請務必呼叫對應的 function tool。
     2. 使用者說的時間如果是相對時間（如「明天下午三點」），請根據現在時間轉換成 ISO 8601 格式 (YYYY-MM-DDTHH:MM:SS)。
     3. 如果使用者沒有指定結束時間，預設行程長度為 1 小時。
