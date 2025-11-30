@@ -6,11 +6,10 @@
     <title>AI 助理 - 對話紀錄後台</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        /* === 全局風格移植 === */
+        /* === 全局風格 === */
         * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
-            /* 移植：紫色漸層背景 */
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             height: 100vh;
             margin: 0;
@@ -19,7 +18,7 @@
             color: #333;
         }
 
-        /* === 毛玻璃卡片效果 (Glassmorphism) === */
+        /* === 毛玻璃卡片效果 === */
         .glass-card {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(18px);
@@ -30,7 +29,7 @@
             transition: all 0.3s ease;
         }
 
-        /* === 佈局容器 === */
+        /* === 佈局 === */
         .main-container {
             flex: 1;
             display: flex;
@@ -44,10 +43,9 @@
 
         /* === 左側選單 === */
         .sidebar {
-            width: 320px;
+            width: 340px; /*稍微加寬以容納完整UID*/
             display: flex;
             flex-direction: column;
-            /* 套用毛玻璃 */
             background: rgba(255, 255, 255, 0.9);
             backdrop-filter: blur(12px);
             border-radius: 20px;
@@ -56,10 +54,8 @@
         }
 
         .sidebar-header {
-            padding: 20px;
-            /* 移植：標題漸層文字 */
+            padding: 20px 20px 10px 20px;
             background: transparent;
-            border-bottom: 1px solid rgba(0,0,0,0.05);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -71,6 +67,25 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+        }
+
+        /* 搜尋框樣式 */
+        .search-box {
+            padding: 0 20px 15px 20px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+        }
+        .search-input {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 10px;
+            border: 1px solid #e0e0e0;
+            background: rgba(255,255,255,0.8);
+            transition: all 0.2s;
+        }
+        .search-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
 
         .user-list {
@@ -96,20 +111,26 @@
         }
 
         .user-item.active {
-            background: #f3e8ff; /* 淺紫底 */
+            background: #f3e8ff;
             border-color: #d8b4fe;
             color: #6b21a8;
         }
         
-        .user-name { font-weight: bold; display: block; font-size: 0.95rem; }
-        .user-uid { font-size: 0.75rem; opacity: 0.7; font-family: monospace; }
+        .user-name { font-weight: bold; display: block; font-size: 0.95rem; margin-bottom: 2px; }
+        /* 修改：讓 UID 完整顯示並縮小字體 */
+        .user-uid { 
+            font-size: 0.7rem; 
+            color: #888; 
+            font-family: monospace; 
+            word-break: break-all; /* 允許換行 */
+            line-height: 1.2;
+        }
 
         /* === 右側聊天視窗 === */
         .chat-area {
             flex: 1;
             display: flex;
             flex-direction: column;
-            /* 套用毛玻璃 */
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(18px);
             border-radius: 20px;
@@ -128,14 +149,13 @@
             flex: 1;
             padding: 20px;
             overflow-y: auto;
-            /* 背景改成淡紫色系，配合整體 */
             background: #fcfaff; 
             display: flex;
             flex-direction: column;
             gap: 15px;
         }
 
-        /* === 對話泡泡優化 === */
+        /* 對話泡泡 */
         .message {
             max-width: 75%;
             padding: 12px 16px;
@@ -146,18 +166,13 @@
             word-wrap: break-word;
             box-shadow: 0 2px 5px rgba(0,0,0,0.05);
         }
-
-        /* User: 改成紫色漸層風格 */
         .message.user {
             align-self: flex-end;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border-radius: 16px 4px 16px 16px;
         }
-        
         .message.user .timestamp { color: rgba(255,255,255,0.8); }
-
-        /* Model: 改成白色卡片風格 */
         .message.model {
             align-self: flex-start;
             background: white;
@@ -165,7 +180,6 @@
             border: 1px solid #eef2f6;
             border-radius: 4px 16px 16px 16px;
         }
-
         .timestamp {
             font-size: 0.7rem;
             color: #999;
@@ -173,62 +187,35 @@
             text-align: right;
         }
 
-        /* === 按鈕樣式 (移植自日記本) === */
+        /* 按鈕 */
         .btn-custom-primary {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 10px;
-            font-weight: 600;
-            transition: all 0.2s;
+            color: white; border: none; padding: 8px 16px; border-radius: 10px; font-weight: 600; transition: all 0.2s;
         }
-        .btn-custom-primary:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-            color: white;
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
+        .btn-custom-primary:hover { opacity: 0.9; transform: translateY(-1px); color: white; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
 
         .btn-custom-secondary {
-            background: #f3f4f6;
-            color: #374151;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            transition: all 0.2s;
+            background: #f3f4f6; color: #374151; border: none; padding: 6px 12px; border-radius: 8px; font-weight: 600; font-size: 0.85rem; transition: all 0.2s;
         }
         .btn-custom-secondary:hover { background: #e5e7eb; color: #111; }
+        
+        .btn-icon { padding: 6px 10px; font-size: 1rem; }
 
-        /* === 登入遮罩 === */
+        /* 登入遮罩 */
         #login-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            /* 背景與 loader 類似 */
             background: linear-gradient(135deg, rgba(102,126,234,0.4), rgba(118,75,162,0.4));
             backdrop-filter: blur(10px);
             z-index: 9999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
+            display: flex; align-items: center; justify-content: center; flex-direction: column;
         }
-
         .login-card {
-            background: rgba(255,255,255,0.95);
-            padding: 40px;
-            border-radius: 24px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.15);
-            text-align: center;
-            border: 1px solid rgba(255,255,255,0.5);
-            width: 320px;
+            background: rgba(255,255,255,0.95); padding: 40px; border-radius: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); text-align: center; border: 1px solid rgba(255,255,255,0.5); width: 320px;
         }
 
-        /* RWD */
         @media (max-width: 768px) {
             .main-container { flex-direction: column; padding: 10px; }
-            .sidebar { width: 100%; height: 250px; margin-bottom: 10px; }
+            .sidebar { width: 100%; height: 300px; margin-bottom: 10px; }
         }
     </style>
 </head>
@@ -252,7 +239,13 @@
         <div class="sidebar">
             <div class="sidebar-header">
                 <span class="sidebar-title">👥 AI 助理後台</span>
-                <button class="btn-custom-secondary" onclick="logout()">登出</button>
+                <div class="d-flex gap-2">
+                    <button class="btn-custom-secondary btn-icon" onclick="loadUserList()" title="重新整理">🔄</button>
+                    <button class="btn-custom-secondary" onclick="logout()">登出</button>
+                </div>
+            </div>
+            <div class="search-box">
+                <input type="text" id="user-search" class="search-input" placeholder="🔍 搜尋名稱、Email 或 UID...">
             </div>
             <div class="user-list" id="user-list">
                 <div class="text-center p-3 text-muted">載入中...</div>
@@ -275,7 +268,7 @@
         import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
         import { getFirestore, collection, getDocs, query, orderBy, limit } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
 
-        // 您的設定維持不變
+        // Firebase 設定
         const firebaseConfig = {
             apiKey: "AIzaSyBKDZvPGy0ovaN0PMFixMDjNB-pSJbUCBQ",
             authDomain: "ai-assistant-8adfd.firebaseapp.com",
@@ -290,26 +283,22 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
         
-        // 管理員 Email
         const ADMIN_EMAIL = "bruce9811123@gmail.com";
+        
+        // 快取使用者資料，供搜尋使用
+        let allUsersCache = [];
 
-        // 登入
         window.googleLogin = async () => {
             const provider = new GoogleAuthProvider();
-            try {
-                await signInWithPopup(auth, provider);
-            } catch (error) {
-                document.getElementById('login-msg').textContent = "登入失敗：" + error.message;
-            }
+            try { await signInWithPopup(auth, provider); } 
+            catch (error) { document.getElementById('login-msg').textContent = "登入失敗：" + error.message; }
         };
 
-        // 登出
         window.logout = () => {
             signOut(auth);
             window.location.reload();
         };
 
-        // 監聽狀態
         onAuthStateChanged(auth, async (user) => {
             const overlay = document.getElementById('login-overlay');
             const container = document.getElementById('app-container');
@@ -319,6 +308,8 @@
                 if (user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
                     overlay.style.display = 'none';
                     container.style.display = 'flex';
+                    // 確保搜尋框事件綁定
+                    document.getElementById('user-search').addEventListener('input', renderUserList);
                     loadUserList();
                 } else {
                     msg.textContent = "權限不足：此頁面僅限管理員存取。";
@@ -330,8 +321,8 @@
             }
         });
 
-        // 載入列表
-        async function loadUserList() {
+        // 修改：先將資料抓下來存到 cache，再呼叫 renderUserList 顯示
+        window.loadUserList = async function() {
             const listContainer = document.getElementById('user-list');
             listContainer.innerHTML = '<div class="text-center p-3 text-muted">載入中...</div>';
             
@@ -339,7 +330,7 @@
                 const q = query(collection(db, "users"));
                 const snapshot = await getDocs(q);
                 
-                listContainer.innerHTML = ''; 
+                allUsersCache = []; // 清空快取
                 
                 if (snapshot.empty) {
                     listContainer.innerHTML = '<div class="p-3 text-center text-muted">目前沒有使用者資料</div>';
@@ -347,24 +338,13 @@
                 }
 
                 snapshot.forEach((doc) => {
-                    const data = doc.data();
-                    const div = document.createElement('div');
-                    div.className = 'user-item';
-                    
-                    const displayName = data.google_email || "未綁定 Email 用戶";
-                    const shortUid = doc.id.substring(0, 8) + "...";
-                    
-                    div.innerHTML = `
-                        <span class="user-name">${displayName}</span>
-                        <span class="user-uid">${shortUid}</span>
-                    `;
-                    div.onclick = () => {
-                        document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
-                        div.classList.add('active');
-                        loadChatHistory(doc.id, displayName);
-                    };
-                    listContainer.appendChild(div);
+                    allUsersCache.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
                 });
+                
+                renderUserList(); // 顯示資料
 
             } catch (e) {
                 console.error(e);
@@ -372,19 +352,55 @@
             }
         }
 
-        // 載入對話 (邏輯維持不變)
+        // 新增：根據搜尋框內容渲染列表
+        function renderUserList() {
+            const listContainer = document.getElementById('user-list');
+            const searchTerm = document.getElementById('user-search').value.trim().toLowerCase();
+            
+            listContainer.innerHTML = '';
+
+            // 執行過濾
+            const filteredUsers = allUsersCache.filter(user => {
+                const name = (user.google_email || "").toLowerCase();
+                const uid = user.id.toLowerCase();
+                return name.includes(searchTerm) || uid.includes(searchTerm);
+            });
+
+            if (filteredUsers.length === 0) {
+                listContainer.innerHTML = '<div class="p-3 text-center text-muted">沒有符合的結果</div>';
+                return;
+            }
+
+            filteredUsers.forEach(user => {
+                const div = document.createElement('div');
+                div.className = 'user-item';
+                
+                const displayName = user.google_email || "未綁定 Email 用戶";
+                // 修改：顯示完整 ID
+                const fullUid = user.id; 
+                
+                div.innerHTML = `
+                    <span class="user-name">${displayName}</span>
+                    <span class="user-uid">UID: ${fullUid}</span>
+                `;
+                
+                div.onclick = () => {
+                    document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
+                    div.classList.add('active');
+                    loadChatHistory(user.id, displayName);
+                };
+                listContainer.appendChild(div);
+            });
+        }
+
+        // 載入對話 (維持不變)
         async function loadChatHistory(uid, name) {
             document.getElementById('chat-header').textContent = `正在查看：${name}`;
             const chatBox = document.getElementById('chat-box');
             chatBox.innerHTML = '<div class="text-center mt-5 text-muted">載入對話紀錄中...</div>';
 
             try {
-                const q = query(
-                    collection(db, "users", uid, "full_logs"),
-                    orderBy("timestamp", "asc"),
-                    limit(100)
-                );
-                
+                const q = query(collection(db, "users", uid, "full_logs"), orderBy("timestamp", "asc"), limit(100));
                 const snapshot = await getDocs(q);
                 
                 if (snapshot.empty) {
@@ -419,7 +435,6 @@
                 });
 
                 chatBox.scrollTop = chatBox.scrollHeight;
-
             } catch (e) {
                 console.error(e);
                 chatBox.innerHTML = '<div class="text-center mt-5 text-danger">讀取失敗</div>';
@@ -428,13 +443,7 @@
 
         function escapeHtml(text) {
             if (!text) return "";
-            return text
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;")
-                .replace(/\n/g, "<br>");
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;").replace(/\n/g, "<br>");
         }
     </script>
 </body>
