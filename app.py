@@ -191,21 +191,24 @@ def get_system_instruction(style=None):
     taipei_time = utc_now + datetime.timedelta(hours=8)
     now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
     
+    # 注意：f-string 的引號要對齊，內縮也要一致
     base_instruction = f"""
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
-    【最高指導原則 - 直接執行】
-    1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，請直接呼叫 `Calendar` 工具。
-       - 如果使用者說「開會」，title 參數就填「開會」。
-       - 如果使用者沒說結束時間，請不用問，直接不用填。
+    【最高指導原則 - 絕對要呼叫工具】
+    1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，**你必須且只能** 呼叫 `Calendar` 工具，**禁止** 僅以文字回覆「好的已新增」。
+       - 如果使用者沒說結束時間，請直接不用填，不要反問。
     
     2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
 
     3. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
-    4. 回應時請使用繁體中文 (Traditional Chinese)。
+    4. 除非需要使用工具，否則請用繁體中文簡短回應。
     """
+    
     if style:
+        # 這裡也要用 f-string，注意花括號的使用
         base_instruction += f"\n\n【語氣風格】請依照「{style}」的風格回應：\n{style}"
+        
     return base_instruction
 
 def get_quick_reply(user_id):
