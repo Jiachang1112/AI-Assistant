@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 助理 - 歷史對話監控</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f0f2f5; height: 100vh; display: flex; flex-direction: column; }
+        .main-container { flex: 1; display: flex; overflow: hidden; max-width: 1200px; margin: 0 auto; width: 100%; padding: 20px; gap: 20px; }
+        
+        /* 左側選單 */
+        .sidebar { width: 300px; background: white; border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .sidebar-header { padding: 15px; background: #3b82f6; color: white; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+        .user-list { flex: 1; overflow-y: auto; }
+        .user-item { padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; transition: 0.2s; }
+        .user-item:hover { background: #f8f9fa; }
+        .user-item.active { background: #e0f2fe; border-left: 4px solid #3b82f6; }
+        .user-name { font-weight: bold; display: block; margin-bottom: 4px; color: #333; }
+        .user-uid { font-size: 0.8rem; color: #888; font-family: monospace; }
+
+        /* 右側聊天視窗 */
+        .chat-area { flex: 1; background: white; border-radius: 12px; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.1); overflow: hidden; }
+        .chat-header { padding: 15px; border-bottom: 1px solid #eee; font-weight: bold; color: #444; background: #fff; }
+        .chat-box { flex: 1; padding: 20px; overflow-y: auto; background: #e5ddd5; display: flex; flex-direction: column; gap: 10px; }
+        
+        /* 對話泡泡 */
+        .message { max-width: 70%; padding: 10px 14px; border-radius: 8px; position: relative; font-size: 0.95rem; line-height: 1.5; word-wrap: break-word; }
+        .message.user { align-self: flex-end; background: #dcf8c6; color: #000; border-radius: 12px 0 12px 12px; }
+        .message.model { align-self: flex-start; background: #fff; color: #000; border-radius: 0 12px 12px 12px; }
+        .timestamp { font-size: 0.7rem; color: #999; margin-top: 4px; text-align: right; }
+
+        /* 登入遮罩 */
+        #login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; z-index: 9999; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+        
+        @media (max-width: 768px) {
+            .main-container { flex-direction: column; padding: 10px; }
+            .sidebar { width: 100%; height: 200px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="login-overlay">
+        <h2 class="mb-4">🔐 後台管理登入</h2>
+        <p class="text-muted mb-4">請使用管理員帳號 (bruce...) 登入</p>
+        <button class="btn btn-primary btn-lg" onclick="googleLogin()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-google me-2" viewBox="0 0 16 16">
+                <path d="M15.545 6.558a9.42 9.42 0 0 1 .139 1.626c0 2.434-.87 4.492-2.384 5.885h.002C11.978 15.292 10.158 16 8 16A8 8 0 1 1 8 0a7.689 7.689 0 0 1 5.352 2.082l-2.284 2.284A4.347 4.347 0 0 0 8 3.166c-2.087 0-3.86 1.408-4.492 3.304a4.792 4.792 0 0 0 0 3.063h.003c.635 1.893 2.405 3.301 4.492 3.301 1.078 0 2.004-.276 2.722-.764h-.003a3.702 3.702 0 0 0 1.599-2.431H8v-3.08h7.545z"/>
+            </svg>
+            Google 登入
+        </button>
+        <p id="login-msg" class="mt-3 text-danger"></p>
+    </div>
+
+    <div class="main-container" id="app-container" style="display: none;">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <span>👥 使用者列表</span>
+                <button class="btn btn-sm btn-outline-light" onclick="logout()">登出</button>
+            </div>
+            <div class="user-list" id="user-list">
+                <div class="text-center p-3 text-muted">載入中...</div>
+            </div>
+        </div>
+
+        <div class="chat-area">
+            <div class="chat-header" id="chat-header">請選擇使用者</div>
+            <div class="chat-box" id="chat-box">
+                <div class="text-center mt-5 text-muted">👈 請從左側選擇一位使用者查看紀錄</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
+        import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
+        import { getFirestore, collection, getDocs, query, orderBy, limit } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
+
+        // 使用你原本的 Firebase Config
+        const firebaseConfig = {
+            apiKey: "AIzaSyCjrjZOyMrzlbG2VOoRqd9o3q3X5HYv2WY",
+            authDomain: "supertool-dee80.firebaseapp.com",
+            projectId: "supertool-dee80",
+            storageBucket: "supertool-dee80.firebasestorage.app",
+            messagingSenderId: "577771534429",
+            appId: "1:577771534429:web:7dc10a6082e9ab1cfd35b4"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const ADMIN_EMAIL = "bruce9811123@gmail.com";
+
+        // 登入功能
+        window.googleLogin = async () => {
+            const provider = new GoogleAuthProvider();
+            try {
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                document.getElementById('login-msg').textContent = "登入失敗：" + error.message;
+            }
+        };
+
+        // 登出功能
+        window.logout = () => {
+            signOut(auth);
+            window.location.reload();
+        };
+
+        // 監聽登入狀態
+        onAuthStateChanged(auth, async (user) => {
+            const overlay = document.getElementById('login-overlay');
+            const container = document.getElementById('app-container');
+            const msg = document.getElementById('login-msg');
+
+            if (user) {
+                if (user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+                    overlay.style.display = 'none';
+                    container.style.display = 'flex';
+                    loadUserList();
+                } else {
+                    msg.textContent = "權限不足：此頁面僅限管理員存取。";
+                    setTimeout(() => signOut(auth), 2000);
+                }
+            } else {
+                overlay.style.display = 'flex';
+                container.style.display = 'none';
+            }
+        });
+
+        // 載入使用者列表
+        async function loadUserList() {
+            const listContainer = document.getElementById('user-list');
+            listContainer.innerHTML = '<div class="text-center p-3 text-muted">載入中...</div>';
+            
+            try {
+                const q = query(collection(db, "users"));
+                const querySnapshot = await getDocs(q);
+                
+                listContainer.innerHTML = ''; // 清空
+                
+                if (querySnapshot.empty) {
+                    listContainer.innerHTML = '<div class="p-3">目前沒有使用者資料</div>';
+                    return;
+                }
+
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const div = document.createElement('div');
+                    div.className = 'user-item';
+                    // 優先顯示 google_email，沒有就顯示 UID
+                    const displayName = data.google_email || "未綁定 Email 用戶";
+                    
+                    div.innerHTML = `
+                        <span class="user-name">${displayName}</span>
+                        <span class="user-uid">${doc.id}</span>
+                    `;
+                    div.onclick = () => {
+                        // 移除其他 active
+                        document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
+                        div.classList.add('active');
+                        loadChatHistory(doc.id, displayName);
+                    };
+                    listContainer.appendChild(div);
+                });
+
+            } catch (e) {
+                console.error(e);
+                listContainer.innerHTML = '<div class="p-3 text-danger">載入失敗</div>';
+            }
+        }
+
+        // 載入特定使用者的對話紀錄
+        async function loadChatHistory(uid, name) {
+            document.getElementById('chat-header').textContent = `正在查看：${name}`;
+            const chatBox = document.getElementById('chat-box');
+            chatBox.innerHTML = '<div class="text-center mt-5 text-muted">載入對話紀錄中...</div>';
+
+            try {
+                // 讀取 full_logs 子集合
+                const q = query(
+                    collection(db, "users", uid, "full_logs"),
+                    orderBy("timestamp", "asc"),
+                    limit(200) // 限制讀取最近 200 筆，避免太卡
+                );
+                
+                const snapshot = await getDocs(q);
+                
+                if (snapshot.empty) {
+                    chatBox.innerHTML = '<div class="text-center mt-5 text-muted">此用戶尚無對話紀錄</div>';
+                    return;
+                }
+
+                chatBox.innerHTML = ''; // 清空
+
+                snapshot.forEach(doc => {
+                    const msg = doc.data();
+                    const date = msg.timestamp ? new Date(msg.timestamp.seconds * 1000).toLocaleString() : '';
+                    
+                    // 渲染使用者訊息
+                    if (msg.user) {
+                        const uDiv = document.createElement('div');
+                        uDiv.className = 'message user';
+                        uDiv.innerHTML = `${escapeHtml(msg.user)}<div class="timestamp">${date}</div>`;
+                        chatBox.appendChild(uDiv);
+                    }
+                    
+                    // 渲染 AI 回應
+                    if (msg.model) {
+                        const mDiv = document.createElement('div');
+                        mDiv.className = 'message model';
+                        mDiv.innerHTML = `${escapeHtml(msg.model)}<div class="timestamp">${date}</div>`;
+                        chatBox.appendChild(mDiv);
+                    }
+                });
+
+                // 捲動到底部
+                chatBox.scrollTop = chatBox.scrollHeight;
+
+            } catch (e) {
+                console.error(e);
+                chatBox.innerHTML = '<div class="text-center mt-5 text-danger">讀取失敗，請確認資料庫權限或路徑</div>';
+            }
+        }
+
+        function escapeHtml(text) {
+            if (!text) return "";
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;")
+                .replace(/\n/g, "<br>");
+        }
+    </script>
+</body>
+</html>
