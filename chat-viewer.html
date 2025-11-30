@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 助理 - 歷史對話監控</title>
+    <title>AI 助理 - 對話紀錄後台</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body { background-color: #f0f2f5; height: 100vh; display: flex; flex-direction: column; }
-        .main-container { flex: 1; display: flex; overflow: hidden; max-width: 1200px; margin: 0 auto; width: 100%; padding: 20px; gap: 20px; }
+        .main-container { flex: 1; display: flex; overflow: hidden; max-width: 1400px; margin: 0 auto; width: 100%; padding: 20px; gap: 20px; }
         
         /* 左側選單 */
         .sidebar { width: 300px; background: white; border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
@@ -27,7 +27,7 @@
         /* 對話泡泡 */
         .message { max-width: 70%; padding: 10px 14px; border-radius: 8px; position: relative; font-size: 0.95rem; line-height: 1.5; word-wrap: break-word; }
         .message.user { align-self: flex-end; background: #dcf8c6; color: #000; border-radius: 12px 0 12px 12px; }
-        .message.model { align-self: flex-start; background: #fff; color: #000; border-radius: 0 12px 12px 12px; }
+        .message.model { align-self: flex-start; background: #fff; color: #000; border-radius: 0 12px 12px 12px; border: 1px solid #eee; }
         .timestamp { font-size: 0.7rem; color: #999; margin-top: 4px; text-align: right; }
 
         /* 登入遮罩 */
@@ -42,7 +42,7 @@
 <body>
 
     <div id="login-overlay">
-        <h2 class="mb-4">🔐 後台管理登入</h2>
+        <h2 class="mb-4">🔐 AI 助理後台登入</h2>
         <p class="text-muted mb-4">請使用管理員帳號 (bruce...) 登入</p>
         <button class="btn btn-primary btn-lg" onclick="googleLogin()">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-google me-2" viewBox="0 0 16 16">
@@ -77,19 +77,22 @@
         import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
         import { getFirestore, collection, getDocs, query, orderBy, limit } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
 
-        // 使用你原本的 Firebase Config
+        // ✅ 已填入您提供的 ai-assistant 專案設定
         const firebaseConfig = {
-            apiKey: "AIzaSyCjrjZOyMrzlbG2VOoRqd9o3q3X5HYv2WY",
-            authDomain: "supertool-dee80.firebaseapp.com",
-            projectId: "supertool-dee80",
-            storageBucket: "supertool-dee80.firebasestorage.app",
-            messagingSenderId: "577771534429",
-            appId: "1:577771534429:web:7dc10a6082e9ab1cfd35b4"
+            apiKey: "AIzaSyBKDZvPGy0ovaN0PMFixMDjNB-pSJbUCBQ",
+            authDomain: "ai-assistant-8adfd.firebaseapp.com",
+            projectId: "ai-assistant-8adfd",
+            storageBucket: "ai-assistant-8adfd.firebasestorage.app",
+            messagingSenderId: "578156755980",
+            appId: "1:578156755980:web:608a5d27a479a4103ac229",
+            measurementId: "G-V9W1NW82Q7"
         };
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        
+        // 管理員 Email (請確認這是你要用來登入查看後台的帳號)
         const ADMIN_EMAIL = "bruce9811123@gmail.com";
 
         // 登入功能
@@ -115,6 +118,7 @@
             const msg = document.getElementById('login-msg');
 
             if (user) {
+                // 檢查是否為管理員
                 if (user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
                     overlay.style.display = 'none';
                     container.style.display = 'flex';
@@ -135,29 +139,32 @@
             listContainer.innerHTML = '<div class="text-center p-3 text-muted">載入中...</div>';
             
             try {
+                // 讀取 users 集合
                 const q = query(collection(db, "users"));
-                const querySnapshot = await getDocs(q);
+                const snapshot = await getDocs(q);
                 
                 listContainer.innerHTML = ''; // 清空
                 
-                if (querySnapshot.empty) {
+                if (snapshot.empty) {
                     listContainer.innerHTML = '<div class="p-3">目前沒有使用者資料</div>';
                     return;
                 }
 
-                querySnapshot.forEach((doc) => {
+                snapshot.forEach((doc) => {
                     const data = doc.data();
                     const div = document.createElement('div');
                     div.className = 'user-item';
+                    
                     // 優先顯示 google_email，沒有就顯示 UID
                     const displayName = data.google_email || "未綁定 Email 用戶";
+                    const shortUid = doc.id.substring(0, 8) + "...";
                     
                     div.innerHTML = `
                         <span class="user-name">${displayName}</span>
-                        <span class="user-uid">${doc.id}</span>
+                        <span class="user-uid">${shortUid}</span>
                     `;
                     div.onclick = () => {
-                        // 移除其他 active
+                        // 移除其他 active 樣式
                         document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
                         div.classList.add('active');
                         loadChatHistory(doc.id, displayName);
@@ -167,7 +174,7 @@
 
             } catch (e) {
                 console.error(e);
-                listContainer.innerHTML = '<div class="p-3 text-danger">載入失敗</div>';
+                listContainer.innerHTML = `<div class="p-3 text-danger">載入失敗：${e.message}<br>請確認 Firestore 規則</div>`;
             }
         }
 
@@ -178,11 +185,11 @@
             chatBox.innerHTML = '<div class="text-center mt-5 text-muted">載入對話紀錄中...</div>';
 
             try {
-                // 讀取 full_logs 子集合
+                // 讀取 full_logs 子集合 (這是我們在 Python 裡設定的永久存檔)
                 const q = query(
                     collection(db, "users", uid, "full_logs"),
                     orderBy("timestamp", "asc"),
-                    limit(200) // 限制讀取最近 200 筆，避免太卡
+                    limit(100)
                 );
                 
                 const snapshot = await getDocs(q);
@@ -196,9 +203,14 @@
 
                 snapshot.forEach(doc => {
                     const msg = doc.data();
-                    const date = msg.timestamp ? new Date(msg.timestamp.seconds * 1000).toLocaleString() : '';
+                    let date = '';
+                    if (msg.timestamp && msg.timestamp.seconds) {
+                        date = new Date(msg.timestamp.seconds * 1000).toLocaleString('zh-TW', {
+                            hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+                        });
+                    }
                     
-                    // 渲染使用者訊息
+                    // 渲染使用者訊息 (靠右)
                     if (msg.user) {
                         const uDiv = document.createElement('div');
                         uDiv.className = 'message user';
@@ -206,7 +218,7 @@
                         chatBox.appendChild(uDiv);
                     }
                     
-                    // 渲染 AI 回應
+                    // 渲染 AI 回應 (靠左)
                     if (msg.model) {
                         const mDiv = document.createElement('div');
                         mDiv.className = 'message model';
@@ -220,7 +232,7 @@
 
             } catch (e) {
                 console.error(e);
-                chatBox.innerHTML = '<div class="text-center mt-5 text-danger">讀取失敗，請確認資料庫權限或路徑</div>';
+                chatBox.innerHTML = '<div class="text-center mt-5 text-danger">讀取失敗，請確認資料庫結構</div>';
             }
         }
 
