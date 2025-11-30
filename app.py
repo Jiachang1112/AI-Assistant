@@ -116,6 +116,7 @@ def get_chat_history(user_id):
 
 def save_chat_history(user_id, user_text, model_text):
     try:
+        # 1. 原本的邏輯：儲存短期記憶 (給 AI 看的)
         doc_ref = db.collection('users').document(user_id)
         doc = doc_ref.get()
         current_history = doc.to_dict().get('chat_history', []) if doc.exists else []
@@ -127,6 +128,16 @@ def save_chat_history(user_id, user_text, model_text):
             current_history = current_history[-20:]
             
         doc_ref.set({'chat_history': current_history}, merge=True)
+
+        # 2. 新增的邏輯：儲存永久紀錄 (給網頁後台看的)
+        log_data = {
+            'user': user_text,
+            'model': model_text,
+            'timestamp': firestore.SERVER_TIMESTAMP
+        }
+        # 存入 full_logs 子集合
+        doc_ref.collection('full_logs').add(log_data)
+
     except Exception as e:
         logging.error(f"儲存對話紀錄失敗: {e}")
 
