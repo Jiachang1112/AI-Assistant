@@ -61,7 +61,7 @@ except Exception as e:
 SCOPES = [
     'https://www.googleapis.com/auth/calendar.events',
     'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/gmail.readonly', # Gmail 權限
+    'https://www.googleapis.com/auth/gmail.readonly',
     'openid'
 ]
 
@@ -202,6 +202,10 @@ def get_system_instruction(style=None):
     【最高指導原則 - 絕對要呼叫工具】
     1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，**你必須且只能** 呼叫 `Calendar` 工具，**禁止** 僅以文字回覆「好的已新增」。
        - 如果使用者沒說結束時間，請直接不用填，不要反問。
+       - 🕒 **時間規則**：
+         * 看到「6:00」、「6點」一律視為 **早上 06:00**。
+         * 看到「18:00」、「18點」一律視為 **晚上 18:00**。
+         * 請勿反問「早上還是下午」，直接以 24 小時制判斷。
     
     2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
 
