@@ -3,7 +3,7 @@ import logging
 import datetime
 import json
 import requests # 用來強制發送動畫請求
-from flask import Flask, request, abort, redirect, url_for, session, render_template_string
+from flask import Flask, request, abort, redirect, url_for, session
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -232,7 +232,6 @@ def get_quick_reply(user_id):
     creds = get_user_credentials(user_id)
     is_logged_in = creds and creds.get('refresh_token')
     items = [
-        QuickReplyButton(action=MessageAction(label="📊 查看報表", text="查看報表")), # 新增查看報表按鈕
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
         QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
@@ -245,24 +244,16 @@ def get_quick_reply(user_id):
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- 🆕 優化版：自我介紹 Flex Message ---
+# --- 🆕 新增：自我介紹 Flex Message ---
 def create_introduction_bubble():
     return BubbleContainer(
         header=BoxComponent(
             layout='vertical',
-            backgroundColor='#ffffff', # 改成白底
+            backgroundColor='#4c6ef5', # 漂亮的藍紫色背景
             paddingAll='20px',
             contents=[
-                TextComponent(text='👋 您好，我是 AI 助理', weight='bold', size='xl', color='#333333', align='center'),
-                TextComponent(
-                    text='您的全能生活智慧管家 🧞‍♂️\n整合日曆、記帳與郵件', # 豐富的文案
-                    weight='bold', 
-                    size='md', 
-                    color='#4c6ef5', # 藍色
-                    align='center', 
-                    margin='sm',
-                    wrap=True
-                )
+                TextComponent(text='👋 您好，我是 AI 助理', weight='bold', size='xl', color='#ffffff', align='center'),
+                TextComponent(text='您的全能生活小幫手', size='sm', color='#eeeeee', align='center', margin='sm')
             ]
         ),
         body=BoxComponent(
@@ -365,9 +356,7 @@ def create_event_bubble(event_data):
             contents=[
                 TextComponent(text=summary, weight='bold', size='3xl', margin='md', wrap=True, color='#111111'),
                 BoxComponent(
-                    layout='vertical',
-                    margin='lg',
-                    spacing='sm',
+                    layout='vertical', margin='lg', spacing='sm',
                     contents=[
                         BoxComponent(
                             layout='baseline', spacing='sm',
@@ -416,9 +405,7 @@ def create_accounting_bubble(data):
                 TextComponent(text=data.get('item', '未命名'), weight='bold', size='xl', margin='md', color='#333333'),
                 TextComponent(text=f"{sign} ${data.get('amount')}", size='4xl', weight='bold', color=theme_color, margin='sm'),
                 BoxComponent(
-                    layout='vertical',
-                    margin='lg',
-                    spacing='sm',
+                    layout='vertical', margin='lg', spacing='sm',
                     contents=[
                         BoxComponent(
                             layout='baseline', spacing='sm',
@@ -440,117 +427,10 @@ def create_accounting_bubble(data):
         )
     )
 
-# --- 🆕 網頁版 HTML 模板 (內嵌) ---
-JOURNAL_HTML = """
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>收支日記本</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f8f9fa; font-family: "Noto Sans TC", sans-serif; }
-        .card { border-radius: 15px; border: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .total-income { color: #10b981; }
-        .total-expense { color: #ef4444; }
-        .transaction-item { border-left: 5px solid #ccc; background: white; padding: 15px; margin-bottom: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .type-income { border-left-color: #10b981; }
-        .type-expense { border-left-color: #ef4444; }
-        .amount-income { color: #10b981; font-weight: bold; }
-        .amount-expense { color: #ef4444; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container py-4">
-        <h2 class="text-center mb-4">📖 我的收支日記</h2>
-        
-        <div class="row text-center mb-4">
-            <div class="col-4">
-                <div class="card p-3">
-                    <small class="text-muted">總收入</small>
-                    <h4 class="total-income">+{{ total_income }}</h4>
-                </div>
-            </div>
-            <div class="col-4">
-                <div class="card p-3">
-                    <small class="text-muted">總支出</small>
-                    <h4 class="total-expense">-{{ total_expense }}</h4>
-                </div>
-            </div>
-            <div class="col-4">
-                <div class="card p-3">
-                    <small class="text-muted">結餘</small>
-                    <h4 class="{{ 'text-success' if (total_income - total_expense) >= 0 else 'text-danger' }}">
-                        {{ total_income - total_expense }}
-                    </h4>
-                </div>
-            </div>
-        </div>
-
-        <h5 class="mb-3">最近交易紀錄</h5>
-        <div>
-            {% if entries %}
-                {% for entry in entries %}
-                <div class="transaction-item {{ 'type-income' if entry.type == 'income' else 'type-expense' }} d-flex justify-content-between align-items-center">
-                    <div>
-                        <div class="fw-bold">{{ entry.note }}</div>
-                        <small class="text-muted">{{ entry.date }} | <span class="badge bg-light text-dark border">{{ entry.categoryId }}</span></small>
-                    </div>
-                    <div class="{{ 'amount-income' if entry.type == 'income' else 'amount-expense' }}">
-                        {{ '+' if entry.type == 'income' else '-' }}{{ entry.amount }}
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="text-center text-muted py-5">
-                    <p>目前還沒有記帳紀錄喔！<br>試試在 LINE 輸入「午餐100」</p>
-                </div>
-            {% endif %}
-        </div>
-    </div>
-</body>
-</html>
-"""
-
 # --- Routes ---
 @app.route("/")
 def home():
     return "OK - Bot Running", 200
-
-# --- 🆕 網頁版日記 Route ---
-@app.route("/journal")
-def view_journal():
-    user_id = request.args.get('userid')
-    if not user_id:
-        return "錯誤：無效的使用者連結。請從 LINE 點擊選單進入。", 403
-
-    try:
-        ledger_id = get_default_ledger_id(user_id)
-        if not ledger_id:
-            return render_template_string(JOURNAL_HTML, entries=[], total_income=0, total_expense=0)
-
-        # 讀取交易紀錄，按日期降序排列
-        docs = db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').order_by('date', direction=firestore.Query.DESCENDING).limit(50).stream()
-        
-        entries = []
-        total_income = 0
-        total_expense = 0
-
-        for doc in docs:
-            d = doc.to_dict()
-            amt = float(d.get('amount', 0))
-            if d.get('type') == 'income':
-                total_income += amt
-            else:
-                total_expense += amt
-            entries.append(d)
-
-        return render_template_string(JOURNAL_HTML, entries=entries, total_income=int(total_income), total_expense=int(total_expense))
-
-    except Exception as e:
-        logging.error(f"讀取日記頁面失敗: {e}")
-        return f"讀取資料錯誤: {e}"
 
 @app.route("/login")
 def login():
@@ -704,32 +584,6 @@ def handle_message(event):
         requests.post(url, headers=headers, json=data)
     except Exception as e:
         logging.warning(f"Failed to send loading animation: {e}")
-
-    # --- 🆕 查看報表指令 ---
-    if user_msg == "查看報表":
-        # 產生該使用者的專屬報表連結
-        report_url = url_for('view_journal', userid=user_id, _external=True)
-        
-        bubble = BubbleContainer(
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text='📊 收支日報表', weight='bold', size='xl'),
-                    TextComponent(text='點擊下方按鈕查看詳細收支紀錄與統計', size='sm', color='#666666', margin='sm', wrap=True)
-                ]
-            ),
-            footer=BoxComponent(
-                layout='vertical',
-                contents=[
-                    ButtonComponent(
-                        style='primary',
-                        action=URIAction(label='開啟報表', uri=report_url)
-                    )
-                ]
-            )
-        )
-        line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="查看報表", contents=bubble, quick_reply=get_quick_reply(user_id)))
-        return
 
     # 🆕 攔截「請問你可以幫我做什麼？」
     if user_msg == "請問你可以幫我做什麼？" or user_msg == "功能介紹":
