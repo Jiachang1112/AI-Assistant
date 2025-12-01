@@ -244,16 +244,24 @@ def get_quick_reply(user_id):
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- 🆕 新增：自我介紹 Flex Message ---
+# --- 🆕 優化版：自我介紹 Flex Message ---
 def create_introduction_bubble():
     return BubbleContainer(
         header=BoxComponent(
             layout='vertical',
-            backgroundColor='#4c6ef5', # 漂亮的藍紫色背景
+            backgroundColor='#ffffff', # 改成白底
             paddingAll='20px',
             contents=[
-                TextComponent(text='👋 您好，我是 AI 助理', weight='bold', size='xl', color='#ffffff', align='center'),
-                TextComponent(text='您的全能生活小幫手', size='sm', color='#eeeeee', align='center', margin='sm')
+                TextComponent(text='👋 您好，我是 AI 助理', weight='bold', size='xl', color='#333333', align='center'),
+                TextComponent(
+                    text='您的全能生活智慧管家 🧞‍♂️\n整合日曆、記帳與郵件', # 豐富的文案
+                    weight='bold', 
+                    size='md', 
+                    color='#4c6ef5', # 藍色
+                    align='center', 
+                    margin='sm',
+                    wrap=True
+                )
             ]
         ),
         body=BoxComponent(
