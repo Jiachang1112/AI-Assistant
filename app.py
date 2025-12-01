@@ -11,7 +11,7 @@ from linebot.models import (
     FlexSendMessage, BubbleContainer, BoxComponent, 
     TextComponent, ButtonComponent, URIAction,
     QuickReply, QuickReplyButton, MessageAction,
-    CarouselContainer, ImageComponent
+    CarouselContainer, ImageComponent, SeparatorComponent, IconComponent
 )
 
 import google.generativeai as genai
@@ -198,7 +198,6 @@ def get_system_instruction(style=None):
     taipei_time = utc_now + datetime.timedelta(hours=8)
     now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 🆕 修正：加入「忽略歷史錯誤」的指令
     base_instruction = f"""
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
@@ -244,6 +243,90 @@ def get_quick_reply(user_id):
     else:
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
+
+# --- 🆕 新增：自我介紹 Flex Message ---
+def create_introduction_bubble():
+    return BubbleContainer(
+        header=BoxComponent(
+            layout='vertical',
+            backgroundColor='#4c6ef5', # 漂亮的藍紫色背景
+            paddingAll='20px',
+            contents=[
+                TextComponent(text='👋 您好，我是 AI 助理', weight='bold', size='xl', color='#ffffff', align='center'),
+                TextComponent(text='您的全能生活小幫手', size='sm', color='#eeeeee', align='center', margin='sm')
+            ]
+        ),
+        body=BoxComponent(
+            layout='vertical',
+            paddingAll='20px',
+            spacing='md',
+            contents=[
+                # 1. 日曆功能
+                BoxComponent(
+                    layout='horizontal',
+                    spacing='md',
+                    contents=[
+                        TextComponent(text='📅', size='xxl', flex=0),
+                        BoxComponent(
+                            layout='vertical',
+                            flex=1,
+                            contents=[
+                                TextComponent(text='行程管理', weight='bold', size='md', color='#333333'),
+                                TextComponent(text='輸入「明天6點吃飯」、「下週五開會」', size='xs', color='#888888', wrap=True)
+                            ]
+                        )
+                    ]
+                ),
+                SeparatorComponent(color='#f0f0f0', margin='md'),
+                # 2. 記帳功能
+                BoxComponent(
+                    layout='horizontal',
+                    spacing='md',
+                    contents=[
+                        TextComponent(text='💰', size='xxl', flex=0),
+                        BoxComponent(
+                            layout='vertical',
+                            flex=1,
+                            contents=[
+                                TextComponent(text='生活記帳', weight='bold', size='md', color='#333333'),
+                                TextComponent(text='輸入「午餐100」、「飲料50」', size='xs', color='#888888', wrap=True)
+                            ]
+                        )
+                    ]
+                ),
+                SeparatorComponent(color='#f0f0f0', margin='md'),
+                # 3. 郵件功能
+                BoxComponent(
+                    layout='horizontal',
+                    spacing='md',
+                    contents=[
+                        TextComponent(text='📧', size='xxl', flex=0),
+                        BoxComponent(
+                            layout='vertical',
+                            flex=1,
+                            contents=[
+                                TextComponent(text='郵件查詢', weight='bold', size='md', color='#333333'),
+                                TextComponent(text='輸入「最近有沒有信」、「查博客來的信」', size='xs', color='#888888', wrap=True)
+                            ]
+                        )
+                    ]
+                )
+            ]
+        ),
+        footer=BoxComponent(
+            layout='vertical',
+            spacing='sm',
+            paddingAll='20px',
+            contents=[
+                ButtonComponent(
+                    style='primary',
+                    height='sm',
+                    color='#4c6ef5',
+                    action=MessageAction(label='✨ 立刻試試看', text='幫我新增明天早上9點開會')
+                )
+            ]
+        )
+    )
 
 # --- Flex Message ---
 def create_event_bubble(event_data):
@@ -432,6 +515,7 @@ def execute_api_logic(user_id, function_name, args):
                 start_time = args.get('start_time')
                 end_time = args.get('end_time')
                 
+                # 🛡️ 400 錯誤修正區塊
                 if not end_time and start_time:
                     try:
                         clean_start = start_time.replace('Z', '+00:00')
@@ -500,6 +584,12 @@ def handle_message(event):
         requests.post(url, headers=headers, json=data)
     except Exception as e:
         logging.warning(f"Failed to send loading animation: {e}")
+
+    # 🆕 攔截「請問你可以幫我做什麼？」
+    if user_msg == "請問你可以幫我做什麼？" or user_msg == "功能介紹":
+        bubble = create_introduction_bubble()
+        line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="功能介紹", contents=bubble, quick_reply=get_quick_reply(user_id)))
+        return
 
     if user_msg == "開啟記帳模式":
         msg = """📝 歡迎使用記帳模式！
