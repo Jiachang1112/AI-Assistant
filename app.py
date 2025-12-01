@@ -453,10 +453,21 @@ def execute_api_logic(user_id, function_name, args):
                 end_time = args.get('end_time')
                 if not end_time and start_time:
                     try:
-                        dt = datetime.datetime.fromisoformat(start_time)
+                        # 處理 Python 對 ISO 格式的嚴格要求 (移除可能存在的 Z)
+                        clean_start = start_time.replace('Z', '+00:00')
+                        dt = datetime.datetime.fromisoformat(clean_start)
                         end_time = (dt + datetime.timedelta(hours=1)).isoformat()
-                    except: pass
-                event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
+                    except Exception as e:
+                        # 萬一真的算失敗了，就讓結束時間等於開始時間 (避免報錯 400)
+                        logging.error(f"Time parse error: {e}")
+                        end_time = start_time
+
+                event = {
+                    'summary': summary, 
+                    'description': args.get('description', ''), 
+                    'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 
+                    'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}
+                }
                 created_event = service.events().insert(calendarId='primary', body=event).execute()
                 created_event['action'] = 'calendar_create'
                 return created_event
