@@ -61,7 +61,7 @@ except Exception as e:
 SCOPES = [
     'https://www.googleapis.com/auth/calendar.events',
     'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.readonly', # Gmail 權限
     'openid'
 ]
 
@@ -200,7 +200,8 @@ def get_system_instruction(style=None):
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
     【最高指導原則 - 絕對要呼叫工具】
-    1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，**你必須且只能** 呼叫 `Calendar` 工具，**禁止** 僅以文字回覆「好的已新增」。
+    1. 當使用者提到「新增」、「記」、「約」、「安排」行程，**或是直接提及「時間+事項」（例如：明天6點吃飯、下午開會）時**：
+       - **你必須且只能** 呼叫 `Calendar` 工具，**禁止** 僅以文字回覆「好的已新增」。
        - 如果使用者沒說結束時間，請直接不用填，不要反問。
        - 🕒 **時間規則**：
          * 看到「6:00」、「6點」一律視為 **早上 06:00**。
@@ -426,7 +427,7 @@ def execute_api_logic(user_id, function_name, args):
                 start_time = args.get('start_time')
                 end_time = args.get('end_time')
                 
-                # 🛡️ 400 錯誤修正區塊：增強時間格式容錯能力
+                # 🛡️ 400 錯誤修正區塊
                 if not end_time and start_time:
                     try:
                         clean_start = start_time.replace('Z', '+00:00')
