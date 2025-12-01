@@ -117,7 +117,6 @@ def get_chat_history(user_id):
 
 def save_chat_history(user_id, user_text, model_text):
     try:
-        # 1. 儲存短期記憶
         doc_ref = db.collection('users').document(user_id)
         doc = doc_ref.get()
         current_history = doc.to_dict().get('chat_history', []) if doc.exists else []
@@ -130,7 +129,6 @@ def save_chat_history(user_id, user_text, model_text):
             
         doc_ref.set({'chat_history': current_history}, merge=True)
 
-        # 2. 儲存永久紀錄
         log_data = {
             'user': user_text,
             'model': model_text,
@@ -173,6 +171,10 @@ def get_default_ledger_id(user_id):
 
 # --- Tools 定義 ---
 def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
+    """
+    建立日曆行程。
+    【重要】當使用者提到「時間」和「動作」（例如：明天6:00吃飯、下週五開會）時，必須呼叫此工具，禁止只回文字。
+    """
     return "Event creation request received."
 
 def get_calendar_events(time_min: str = None):
@@ -196,24 +198,28 @@ def get_system_instruction(style=None):
     taipei_time = utc_now + datetime.timedelta(hours=8)
     now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
     
+    # 🆕 修正：加入「忽略歷史錯誤」的指令
     base_instruction = f"""
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
-    【最高指導原則 - 絕對要呼叫工具】
-    1. 當使用者提到「新增」、「記」、「約」、「安排」行程時，**你必須且只能** 呼叫 `Calendar` 工具，**禁止** 僅以文字回覆「好的已新增」。
-       - 如果使用者沒說結束時間，請直接不用填，不要反問。
+    【⚠️ 絕對最高指令 - 不要模仿歷史對話中的錯誤】
+    即使對話紀錄中顯示你過去曾經「只用文字回覆行程」，那是錯誤的！
+    請忽略過去的錯誤示範，從現在開始嚴格遵守以下規則：
+
+    1. 當使用者輸入包含「時間」與「事項」的句子（例：明天6點吃飯、18:00開會、下週三看電影）：
+       - ✅ **必須** 呼叫 `Calendar` 工具。
+       - ❌ **禁止** 僅以文字回覆「好的已新增」、「已幫您建立行程」。**絕對不准**只動口不動手。
        - 🕒 **時間規則**：
          * 看到「6:00」、「6點」一律視為 **早上 06:00**。
          * 看到「18:00」、「18點」一律視為 **晚上 18:00**。
-         * 請勿反問「早上還是下午」，直接以 24 小時制判斷。
+         * 直接判斷，不要反問使用者。
     
     2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
 
     3. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
 
-    4. 🆕 當使用者問到「信箱」、「郵件」、「Email」相關問題時：
+    4. 當使用者問到「信箱」、「郵件」、「Email」相關問題時：
        - 請呼叫 `get_recent_emails`。
-       - 如果使用者問「最近有沒有信」，預設搜尋未讀信件。
        
     5. 除非需要使用工具，否則請用繁體中文簡短回應。
     """
@@ -426,7 +432,6 @@ def execute_api_logic(user_id, function_name, args):
                 start_time = args.get('start_time')
                 end_time = args.get('end_time')
                 
-                # 🛡️ 400 錯誤修正區塊：增強時間格式容錯能力
                 if not end_time and start_time:
                     try:
                         clean_start = start_time.replace('Z', '+00:00')
@@ -434,7 +439,7 @@ def execute_api_logic(user_id, function_name, args):
                         end_time = (dt + datetime.timedelta(hours=1)).isoformat()
                     except Exception as e:
                         logging.error(f"Time parse error: {e}")
-                        end_time = start_time # 算失敗了就用開始時間，避免報錯
+                        end_time = start_time
 
                 event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
                 created_event = service.events().insert(calendarId='primary', body=event).execute()
