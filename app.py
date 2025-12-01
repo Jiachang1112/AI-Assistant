@@ -173,7 +173,7 @@ def get_default_ledger_id(user_id):
 def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
     """
     建立日曆行程。
-    【重要】當使用者說「明天20點吃飯」、「10:00開會」、「下週五看電影」等包含時間與事件的語句時，**務必呼叫此工具**。
+    【重要】當使用者提到「時間」和「動作」（例如：明天6:00吃飯、下週五開會）時，必須呼叫此工具，禁止只回文字。
     """
     return "Event creation request received."
 
@@ -198,17 +198,20 @@ def get_system_instruction(style=None):
     taipei_time = utc_now + datetime.timedelta(hours=8)
     now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 🆕 修正：加入更廣泛的時間觸發規則
+    # 🆕 修正：加入「忽略歷史錯誤」的指令
     base_instruction = f"""
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
-    【⚠️ 絕對最高指令 - 偵測到時間必須行動】
-    1. 當使用者輸入包含 **「時間」** 與 **「事項」** 的句子（例如：明天20點吃飯、18:00開會、9點上課）：
+    【⚠️ 絕對最高指令 - 不要模仿歷史對話中的錯誤】
+    即使對話紀錄中顯示你過去曾經「只用文字回覆行程」，那是錯誤的！
+    請忽略過去的錯誤示範，從現在開始嚴格遵守以下規則：
+
+    1. 當使用者輸入包含「時間」與「事項」的句子（例：明天6點吃飯、18:00開會、下週三看電影）：
        - ✅ **必須** 呼叫 `Calendar` 工具。
-       - ❌ **禁止** 僅以文字回覆「好的已新增」、「已幫您建立行程」。如果不呼叫工具，就不要回覆行程相關內容。
+       - ❌ **禁止** 僅以文字回覆「好的已新增」、「已幫您建立行程」。**絕對不准**只動口不動手。
        - 🕒 **時間規則**：
-         * 看到 **「數字+點」** (如 20點、9點) 或 **「數字:數字」** (如 20:00) 一律視為明確時間指令。
-         * 6:00/6點 -> 06:00；18:00/18點 -> 18:00；20點 -> 20:00。
+         * 看到「6:00」、「6點」一律視為 **早上 06:00**。
+         * 看到「18:00」、「18點」一律視為 **晚上 18:00**。
          * 直接判斷，不要反問使用者。
     
     2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
@@ -429,7 +432,6 @@ def execute_api_logic(user_id, function_name, args):
                 start_time = args.get('start_time')
                 end_time = args.get('end_time')
                 
-                # 🛡️ 400 錯誤修正區塊
                 if not end_time and start_time:
                     try:
                         clean_start = start_time.replace('Z', '+00:00')
