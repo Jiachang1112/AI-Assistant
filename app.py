@@ -61,6 +61,7 @@ except Exception as e:
 SCOPES = [
     'https://www.googleapis.com/auth/calendar.events',
     'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/gmail.readonly', # 🆕 新增 Gmail 讀取權限
     'openid'
 ]
 
@@ -184,7 +185,16 @@ def get_calendar_events(time_min: str = None):
 def add_accounting_entry(item: str, amount: float, category: str = "其他", type: str = "expense", note: str = ""):
     return "Accounting request received."
 
-tools_list = [create_calendar_event, get_calendar_events, add_accounting_entry]
+# 🆕 新增 Gmail 工具函式
+def get_recent_emails(query: str = "is:unread", max_results: int = 5):
+    """
+    取得 Gmail 郵件清單與摘要。
+    query: 搜尋語法，例如 'is:unread' (未讀), 'from:博客來', 'subject:發票'。
+    max_results: 數量限制。
+    """
+    return "Gmail request received."
+
+tools_list = [create_calendar_event, get_calendar_events, add_accounting_entry, get_recent_emails]
 
 def get_system_instruction(style=None):
     utc_now = datetime.datetime.utcnow()
@@ -202,7 +212,12 @@ def get_system_instruction(style=None):
     2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
 
     3. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
-    4. 除非需要使用工具，否則請用繁體中文簡短回應。
+
+    4. 🆕 當使用者問到「信箱」、「郵件」、「Email」相關問題時：
+       - 請呼叫 `get_recent_emails`。
+       - 如果使用者問「最近有沒有信」，預設搜尋未讀信件。
+       
+    5. 除非需要使用工具，否則請用繁體中文簡短回應。
     """
     
     if style:
@@ -419,7 +434,7 @@ def execute_api_logic(user_id, function_name, args):
             logging.error(f"記帳失敗: {e}")
             return f"記帳錯誤: {e}"
 
-    # 日曆
+    # Google 服務 (日曆 & Gmail)
     creds = Credentials.from_authorized_user_info(creds_info)
     try:
         if creds.expired and creds.refresh_token:
@@ -428,34 +443,63 @@ def execute_api_logic(user_id, function_name, args):
             creds_data = {'google_email': creds_info.get('google_email'), 'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes}
             save_user_credentials(user_id, creds_data)
         
-        service = build('calendar', 'v3', credentials=creds)
-        
-        if function_name == "create_calendar_event":
-            summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
-            start_time = args.get('start_time')
-            end_time = args.get('end_time')
-            if not end_time and start_time:
-                try:
-                    dt = datetime.datetime.fromisoformat(start_time)
-                    end_time = (dt + datetime.timedelta(hours=1)).isoformat()
-                except: pass
-            event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
-            created_event = service.events().insert(calendarId='primary', body=event).execute()
-            created_event['action'] = 'calendar_create'
-            return created_event
+        # === 日曆功能 ===
+        if function_name in ["create_calendar_event", "get_calendar_events"]:
+            service = build('calendar', 'v3', credentials=creds)
             
-        elif function_name == "get_calendar_events":
-            now = datetime.datetime.utcnow().isoformat() + 'Z'
-            time_min = args.get('time_min', now)
-            events_result = service.events().list(calendarId='primary', timeMin=time_min, maxResults=10, singleEvents=True, orderBy='startTime').execute()
-            events = events_result.get('items', [])
-            if not events: return "接下來沒有行程。"
-            result_text = "接下來的行程：\n"
-            for event in events:
-                start = event['start'].get('dateTime', event['start'].get('date'))
-                summary = event.get('summary', '無標題')
-                result_text += f"- {start}: {summary}\n"
-            return result_text
+            if function_name == "create_calendar_event":
+                summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
+                start_time = args.get('start_time')
+                end_time = args.get('end_time')
+                if not end_time and start_time:
+                    try:
+                        dt = datetime.datetime.fromisoformat(start_time)
+                        end_time = (dt + datetime.timedelta(hours=1)).isoformat()
+                    except: pass
+                event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
+                created_event = service.events().insert(calendarId='primary', body=event).execute()
+                created_event['action'] = 'calendar_create'
+                return created_event
+                
+            elif function_name == "get_calendar_events":
+                now = datetime.datetime.utcnow().isoformat() + 'Z'
+                time_min = args.get('time_min', now)
+                events_result = service.events().list(calendarId='primary', timeMin=time_min, maxResults=10, singleEvents=True, orderBy='startTime').execute()
+                events = events_result.get('items', [])
+                if not events: return "接下來沒有行程。"
+                result_text = "接下來的行程：\n"
+                for event in events:
+                    start = event['start'].get('dateTime', event['start'].get('date'))
+                    summary = event.get('summary', '無標題')
+                    result_text += f"- {start}: {summary}\n"
+                return result_text
+
+        # === 🆕 Gmail 功能 ===
+        elif function_name == "get_recent_emails":
+            service = build('gmail', 'v1', credentials=creds)
+            query = args.get('query', 'is:unread')
+            max_results = int(args.get('max_results', 5))
+            
+            results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
+            messages = results.get('messages', [])
+            
+            if not messages:
+                return "📭 找不到符合條件的郵件。"
+            
+            email_summaries = []
+            for msg in messages:
+                txt = service.users().messages().get(userId='me', id=msg['id'], format='metadata').execute()
+                payload = txt.get('payload', {})
+                headers = payload.get('headers', [])
+                snippet = txt.get('snippet', '(無摘要)')
+                
+                subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(無標題)')
+                sender = next((h['value'] for h in headers if h['name'] == 'From'), '(未知)')
+                
+                email_summaries.append(f"📩 寄件者：{sender}\n標題：{subject}\n摘要：{snippet}\n")
+            
+            return "\n---\n".join(email_summaries)
+
     except Exception as e: return f"執行錯誤：{str(e)}"
     return "未知的操作。"
 
