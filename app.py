@@ -61,7 +61,7 @@ except Exception as e:
 SCOPES = [
     'https://www.googleapis.com/auth/calendar.events',
     'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/gmail.readonly', # 🆕 新增 Gmail 讀取權限
+    'https://www.googleapis.com/auth/gmail.readonly', # Gmail 權限
     'openid'
 ]
 
@@ -117,7 +117,7 @@ def get_chat_history(user_id):
 
 def save_chat_history(user_id, user_text, model_text):
     try:
-        # 1. 原本的邏輯：儲存短期記憶 (給 AI 看的)
+        # 1. 儲存短期記憶
         doc_ref = db.collection('users').document(user_id)
         doc = doc_ref.get()
         current_history = doc.to_dict().get('chat_history', []) if doc.exists else []
@@ -130,13 +130,12 @@ def save_chat_history(user_id, user_text, model_text):
             
         doc_ref.set({'chat_history': current_history}, merge=True)
 
-        # 2. 新增的邏輯：儲存永久紀錄 (給網頁後台看的)
+        # 2. 儲存永久紀錄
         log_data = {
             'user': user_text,
             'model': model_text,
             'timestamp': firestore.SERVER_TIMESTAMP
         }
-        # 存入 full_logs 子集合
         doc_ref.collection('full_logs').add(log_data)
 
     except Exception as e:
@@ -174,9 +173,6 @@ def get_default_ledger_id(user_id):
 
 # --- Tools 定義 ---
 def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
-    """
-    在 Google 日曆建立行程。
-    """
     return "Event creation request received."
 
 def get_calendar_events(time_min: str = None):
@@ -185,7 +181,6 @@ def get_calendar_events(time_min: str = None):
 def add_accounting_entry(item: str, amount: float, category: str = "其他", type: str = "expense", note: str = ""):
     return "Accounting request received."
 
-# 🆕 新增 Gmail 工具函式
 def get_recent_emails(query: str = "is:unread", max_results: int = 5):
     """
     取得 Gmail 郵件清單與摘要。
@@ -201,7 +196,6 @@ def get_system_instruction(style=None):
     taipei_time = utc_now + datetime.timedelta(hours=8)
     now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 注意：f-string 的引號要對齊，內縮也要一致
     base_instruction = f"""
     你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
     
@@ -221,7 +215,6 @@ def get_system_instruction(style=None):
     """
     
     if style:
-        # 這裡也要用 f-string，注意花括號的使用
         base_instruction += f"\n\n【語氣風格】請依照「{style}」的風格回應：\n{style}"
         
     return base_instruction
@@ -233,7 +226,7 @@ def get_quick_reply(user_id):
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
         QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
-        QuickReplyButton(action=MessageAction(label="🗑️ 清空對話", text="清空對話")),
+        QuickReplyButton(action=MessageAction(label="📧 查詢信件", text="查詢未讀信件")),
         QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
     ]
     if is_logged_in:
@@ -242,7 +235,7 @@ def get_quick_reply(user_id):
         items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- 修改：日曆 Flex Message (縮小圖示、保留右側文字) ---
+# --- Flex Message ---
 def create_event_bubble(event_data):
     summary = event_data.get('summary') or event_data.get('title') or '未命名行程'
     html_link = event_data.get('htmlLink')
@@ -261,19 +254,8 @@ def create_event_bubble(event_data):
             backgroundColor='#1DB446',
             paddingAll='15px',
             contents=[
-                # 圖示縮小為 3xl
                 TextComponent(text='📅', size='3xl', flex=0, align='center', gravity='center'),
-                # 標題靠左對齊圖示，顯示「行程已建立」
-                TextComponent(
-                    text='行程已建立', 
-                    weight='bold', 
-                    color='#ffffff', 
-                    size='lg', 
-                    align='start', 
-                    gravity='center', 
-                    margin='md',
-                    flex=1
-                )
+                TextComponent(text='行程已建立', weight='bold', color='#ffffff', size='lg', align='start', gravity='center', margin='md', flex=1)
             ]
         ),
         body=BoxComponent(
@@ -307,7 +289,6 @@ def create_event_bubble(event_data):
         )
     )
 
-# --- 修改：記帳 Flex Message (縮小圖示、保留右側文字) ---
 def create_accounting_bubble(data):
     is_income = data.get('type') == 'income'
     theme_color = '#10b981' if is_income else '#ef4444'
@@ -321,19 +302,8 @@ def create_accounting_bubble(data):
             backgroundColor=theme_color,
             paddingAll='15px',
             contents=[
-                # 圖示縮小為 3xl
                 TextComponent(text=icon, size='3xl', flex=0, align='center', gravity='center'),
-                # 標題靠左對齊圖示
-                TextComponent(
-                    text=title_text, 
-                    weight='bold', 
-                    color='#ffffff', 
-                    size='lg', 
-                    align='start', 
-                    gravity='center', 
-                    margin='md',
-                    flex=1
-                )
+                TextComponent(text=title_text, weight='bold', color='#ffffff', size='lg', align='start', gravity='center', margin='md', flex=1)
             ]
         ),
         body=BoxComponent(
@@ -451,23 +421,18 @@ def execute_api_logic(user_id, function_name, args):
                 summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
                 start_time = args.get('start_time')
                 end_time = args.get('end_time')
+                
+                # 🛡️ 400 錯誤修正區塊：增強時間格式容錯能力
                 if not end_time and start_time:
                     try:
-                        # 處理 Python 對 ISO 格式的嚴格要求 (移除可能存在的 Z)
                         clean_start = start_time.replace('Z', '+00:00')
                         dt = datetime.datetime.fromisoformat(clean_start)
                         end_time = (dt + datetime.timedelta(hours=1)).isoformat()
                     except Exception as e:
-                        # 萬一真的算失敗了，就讓結束時間等於開始時間 (避免報錯 400)
                         logging.error(f"Time parse error: {e}")
-                        end_time = start_time
+                        end_time = start_time # 算失敗了就用開始時間，避免報錯
 
-                event = {
-                    'summary': summary, 
-                    'description': args.get('description', ''), 
-                    'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 
-                    'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}
-                }
+                event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
                 created_event = service.events().insert(calendarId='primary', body=event).execute()
                 created_event['action'] = 'calendar_create'
                 return created_event
@@ -485,7 +450,7 @@ def execute_api_logic(user_id, function_name, args):
                     result_text += f"- {start}: {summary}\n"
                 return result_text
 
-        # === 🆕 Gmail 功能 ===
+        # === Gmail 功能 ===
         elif function_name == "get_recent_emails":
             service = build('gmail', 'v1', credentials=creds)
             query = args.get('query', 'is:unread')
