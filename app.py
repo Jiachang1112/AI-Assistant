@@ -254,6 +254,7 @@ def get_quick_reply(user_id):
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
         QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
+        QuickReplyButton(action=MessageAction(label="🧹 清空對話", text="清空對話")),
         QuickReplyButton(action=MessageAction(label="📧 查詢信件", text="查詢未讀信件")),
         QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
     ]
