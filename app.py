@@ -169,6 +169,24 @@ def get_default_ledger_id(user_id):
         logging.error(f"取得帳本失敗: {e}")
         return None
 
+def get_ledger_balance(user_id, ledger_id):
+    """計算帳本總餘額"""
+    try:
+        # 注意：若資料量非常大，建議改用 Firebase 的 aggregation queries 或 counter
+        docs = db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').stream()
+        balance = 0.0
+        for doc in docs:
+            d = doc.to_dict()
+            amt = float(d.get('amount', 0))
+            if d.get('type') == 'income':
+                balance += amt
+            else:
+                balance -= amt
+        return int(balance)
+    except Exception as e:
+        logging.error(f"計算餘額失敗: {e}")
+        return 0
+
 # --- Tools 定義 ---
 def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
     """
@@ -393,50 +411,93 @@ def create_event_bubble(event_data):
         )
     )
 
-def create_accounting_bubble(data):
+# 🔥 重新設計的記帳卡片 (依照您的截圖風格)
+def create_accounting_bubble(data, user_id):
+    # 判斷收支顏色 (支出：紅，收入：綠)
     is_income = data.get('type') == 'income'
-    theme_color = '#10b981' if is_income else '#ef4444'
-    sign = '+' if is_income else '-'
-    icon = '💰' if is_income else '💸'
-    title_text = '收入入帳' if is_income else '支出記帳'
+    # 依照多數記帳 APP 慣例：收入綠色，支出紅色
+    theme_color = '#10b981' if is_income else '#ef4444' 
     
+    # 產生網頁報表連結 (給編輯按鈕用)
+    report_url = url_for('view_journal', userid=user_id, _external=True)
+
     return BubbleContainer(
-        header=BoxComponent(
-            layout='horizontal',
-            backgroundColor=theme_color,
-            paddingAll='15px',
-            contents=[
-                TextComponent(text=icon, size='3xl', flex=0, align='center', gravity='center'),
-                TextComponent(text=title_text, weight='bold', color='#ffffff', size='lg', align='start', gravity='center', margin='md', flex=1)
-            ]
-        ),
         body=BoxComponent(
             layout='vertical',
+            paddingAll='20px',
             contents=[
-                TextComponent(text=data.get('item', '未命名'), weight='bold', size='xl', margin='md', color='#333333'),
-                TextComponent(text=f"{sign} ${data.get('amount')}", size='4xl', weight='bold', color=theme_color, margin='sm'),
+                # 第一行：分類名稱 + 預設帳本標籤
+                BoxComponent(
+                    layout='baseline',
+                    contents=[
+                        TextComponent(text=data.get('category', '其他'), weight='bold', size='xl', color=theme_color, flex=1),
+                        # 模擬 Badge 效果
+                        BoxComponent(
+                            layout='vertical',
+                            backgroundColor=theme_color,
+                            cornerRadius='12px',
+                            paddingAll='3px',
+                            paddingStart='8px',
+                            paddingEnd='8px',
+                            flex=0,
+                            contents=[
+                                TextComponent(text='預設帳本', size='xs', color='#ffffff', weight='bold')
+                            ]
+                        )
+                    ]
+                ),
+                # 第二行：金額
+                BoxComponent(
+                    layout='baseline',
+                    margin='md',
+                    contents=[
+                        TextComponent(text=str(int(data.get('amount'))), weight='bold', size='4xl', color='#333333', flex=0),
+                        TextComponent(text='NT$', size='sm', color='#999999', margin='sm', flex=0, gravity='bottom')
+                    ]
+                ),
+                # 第三行：帳本餘額
+                TextComponent(text=f"帳本餘額: {data.get('balance')}", size='xs', color='#aaaaaa', margin='xs'),
+                
+                SeparatorComponent(margin='lg', color='#f0f0f0'),
+                
+                # 詳細資訊區塊
                 BoxComponent(
                     layout='vertical',
                     margin='lg',
                     spacing='sm',
                     contents=[
+                        # 備註 (Item + Note)
                         BoxComponent(
-                            layout='baseline', spacing='sm',
+                            layout='baseline',
                             contents=[
-                                TextComponent(text='分類', color='#aaaaaa', size='sm', flex=1),
-                                TextComponent(text=data.get('category'), color='#666666', size='sm', flex=4, weight="bold")
-                            ],
+                                TextComponent(text='備註', color='#666666', size='sm', flex=2),
+                                TextComponent(text=data.get('item', '無'), color='#333333', size='sm', flex=5, align='end', wrap=True)
+                            ]
                         ),
+                        # 日期
                         BoxComponent(
-                            layout='baseline', spacing='sm',
+                            layout='baseline',
                             contents=[
-                                TextComponent(text='日期', color='#aaaaaa', size='sm', flex=1),
-                                TextComponent(text=data.get('date'), color='#666666', size='sm', flex=4)
-                            ],
-                        ),
-                    ],
+                                TextComponent(text='日期', color='#666666', size='sm', flex=2),
+                                TextComponent(text=data.get('date'), color='#333333', size='sm', flex=5, align='end')
+                            ]
+                        )
+                    ]
+                ),
+                # 底部按鈕
+                BoxComponent(
+                    layout='vertical',
+                    margin='xl',
+                    contents=[
+                        ButtonComponent(
+                            style='secondary',
+                            height='sm',
+                            color='#f0f0f0',
+                            action=URIAction(label='編輯', uri=report_url) # 連結到你的報表網頁
+                        )
+                    ]
                 )
-            ],
+            ]
         )
     )
 
@@ -612,7 +673,22 @@ def execute_api_logic(user_id, function_name, args):
             now_iso = datetime.datetime.now().strftime("%Y-%m-%d")
             entry_data = {'type': args.get('type', 'expense'), 'amount': float(args.get('amount', 0)), 'categoryId': args.get('category', '其他'), 'note': args.get('item', '') + ' ' + args.get('note', ''), 'date': now_iso, 'createdAt': firestore.SERVER_TIMESTAMP, 'updatedAt': firestore.SERVER_TIMESTAMP, 'source': 'line-bot'}
             db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').add(entry_data)
-            return {'status': 'success', 'action': 'accounting', 'data': {'item': args.get('item', ''), 'amount': entry_data['amount'], 'category': entry_data['categoryId'], 'type': entry_data['type'], 'date': entry_data['date']}}
+            
+            # 🔥 新增：計算最新餘額 (為了顯示在卡片上)
+            current_balance = get_ledger_balance(user_id, ledger_id)
+            
+            return {
+                'status': 'success', 
+                'action': 'accounting', 
+                'data': {
+                    'item': args.get('item', ''), 
+                    'amount': entry_data['amount'], 
+                    'category': entry_data['categoryId'], 
+                    'type': entry_data['type'], 
+                    'date': entry_data['date'],
+                    'balance': current_balance # 回傳餘額
+                }
+            }
         except Exception as e:
             logging.error(f"記帳失敗: {e}")
             return f"記帳錯誤: {e}"
@@ -801,7 +877,8 @@ def handle_message(event):
                     api_result = execute_api_logic(user_id, fname, fargs)
                     if isinstance(api_result, dict):
                         if api_result.get('action') == 'accounting':
-                            flex_bubbles.append(create_accounting_bubble(api_result['data']))
+                            # 🔥 使用新版函式，並傳入 user_id 以產生編輯連結
+                            flex_bubbles.append(create_accounting_bubble(api_result['data'], user_id))
                             save_chat_history(user_id, user_msg, f"已記帳：{api_result['data']['item']}")
                         elif api_result.get('action') == 'calendar_create':
                             flex_bubbles.append(create_event_bubble(api_result))
@@ -829,6 +906,7 @@ def handle_message(event):
                 reply_messages.append(TextSendMessage(text=combined_text))
 
         if reply_messages:
+            # 🔥 確保最後一個訊息帶有 Quick Reply
             reply_messages[-1].quick_reply = get_quick_reply(user_id)
             line_bot_api.reply_message(event.reply_token, reply_messages)
         else:
