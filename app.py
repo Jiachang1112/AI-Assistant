@@ -253,7 +253,7 @@ def get_quick_reply(user_id):
         QuickReplyButton(action=MessageAction(label="📊 查看報表", text="查看報表")), # 新增查看報表按鈕
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
-        QuickReplyButton(action=MessageAction(label="💰 記帳/風格", text="開啟記帳模式")),
+        QuickReplyButton(action=MessageAction(label="🎭 設定角色", text="設定角色")),
         QuickReplyButton(action=MessageAction(label="🧹 清空對話", text="清空對話")),
         QuickReplyButton(action=MessageAction(label="📧 查詢信件", text="查詢未讀信件")),
         QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
@@ -814,16 +814,16 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="功能介紹", contents=bubble, quick_reply=get_quick_reply(user_id)))
         return
 
-    if user_msg == "開啟記帳模式":
-        msg = """📝 歡迎使用記帳模式！
-您可以直接輸入「午餐 100元」、「飲料 50」來記帳。
+    if user_msg == "設定角色":
+        msg = """🎭 角色設定模式
+請輸入「設定風格：」加上您想要的角色。
 
-💡 您也可以調整我的回覆風格：
-請輸入以下指令：
+範例：
 - 設定風格：毒舌管家
 - 設定風格：溫柔秘書
-- 設定風格：嚴格會計
-(也可以自訂，例如「設定風格：傲嬌妹妹」)"""
+- 設定風格：愛生氣的男朋友
+
+💡 設定後，即使按「清空對話」，我還是會記得這個角色喔！"""
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id)))
         return
 
