@@ -862,7 +862,7 @@ def handle_message(event):
             for h in data.get('chat_history', []): history.append({"role": h['role'], "parts": [h['text']]})
 
         current_instruction = get_system_instruction(user_style)
-        model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=current_instruction)
+        model = genai.GenerativeModel("gemini-1.5-flash", tools=tools_list, system_instruction=current_instruction)
         chat = model.start_chat(history=history, enable_automatic_function_calling=False)
         response = chat.send_message(user_msg)
         
