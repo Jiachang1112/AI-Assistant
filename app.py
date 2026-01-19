@@ -2,7 +2,7 @@ import os
 import logging
 import datetime
 import json
-import requests # 用來強制發送動畫請求
+import requests
 from flask import Flask, request, abort, redirect, url_for, session, render_template_string
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -22,7 +22,7 @@ from googleapiclient.discovery import build
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# 啟用 log
+# 設定 Log
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
@@ -40,14 +40,53 @@ app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
-if not all([LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, FIREBASE_CREDENTIALS_JSON]):
-    logging.error("環境變數未設定完全，請檢查 Render 設定。")
+# --- 全域變數：儲存自動偵測到的最佳模型名稱 ---
+# 預設先給一個最安全的，之後會自動更新
+BEST_MODEL_NAME = "gemini-1.5-flash"
 
 # --- 初始化 ---
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-genai.configure(api_key=GEMINI_API_KEY)
 
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    
+    # 🔥🔥🔥 關鍵修正：自動偵測最佳模型 🔥🔥🔥
+    try:
+        logging.info("🔍 正在偵測您的 API Key 可用模型...")
+        # 取得所有支援 'generateContent' 的模型
+        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        logging.info(f"📋 您的 Key 擁有的所有模型: {all_models}")
+        
+        # 優先順序策略：越前面的越優先 (避開不穩定的 2.0)
+        priority_list = [
+            "gemini-1.5-flash", 
+            "gemini-1.5-pro",
+            "gemini-1.0-pro", 
+            "gemini-pro"
+        ]
+        
+        found = False
+        # 1. 先找有沒有完全符合優先名單的
+        for p in priority_list:
+            for m in all_models:
+                if p in m: # 只要名稱包含關鍵字 (例如 models/gemini-1.5-flash-001)
+                    BEST_MODEL_NAME = m
+                    found = True
+                    break
+            if found: break
+        
+        # 2. 如果優先名單都沒找到，就隨便拿第一個能用的 (死馬當活馬醫)
+        if not found and all_models:
+            BEST_MODEL_NAME = all_models[0]
+            
+        logging.info(f"✅ 系統自動選擇了最佳模型: {BEST_MODEL_NAME}")
+        
+    except Exception as e:
+        logging.error(f"❌ 模型偵測失敗 (可能是 Key 權限問題): {e}")
+        # 如果真的偵測失敗，保持預設值
+
+db = None
 try:
     if not firebase_admin._apps:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
@@ -65,40 +104,105 @@ SCOPES = [
     'openid'
 ]
 
-# --- 資料庫操作 ---
-def save_user_credentials(user_id, creds_data):
+# --- Admin HTML (包含後台功能) ---
+ADMIN_HTML = """
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 助理 - 系統狀態</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>body{font-family:sans-serif;background:#f0f2f5;padding:20px;}.container{max-width:800px;margin:0 auto;background:white;padding:30px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}</style>
+</head>
+<body>
+    <div class="container text-center">
+        <h1>🔧 系統狀態診斷</h1>
+        <div class="alert alert-info">
+            目前使用的 AI 模型：<strong style="font-size: 1.2em;">{{ model_id }}</strong>
+        </div>
+        <p>如果顯示的模型是 gemini-2.0 且無法運作，請檢查 API Key 權限。</p>
+        <hr>
+        <a href="/journal" class="btn btn-primary">查看日記範例</a>
+    </div>
+</body>
+</html>
+"""
+
+# 2. 收支日記頁面
+JOURNAL_HTML = """<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>收支日記</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="bg-light"><div class="container py-4"><h3 class="text-center mb-4">📖 收支日記</h3><div class="card p-3 mb-3"><div class="d-flex justify-content-between"><div>收入 <span class="text-success">+{{ total_income }}</span></div><div>支出 <span class="text-danger">-{{ total_expense }}</span></div><div>結餘 <b>{{ total_income - total_expense }}</b></div></div></div><ul class="list-group">{% for e in entries %}<li class="list-group-item d-flex justify-content-between"><div><b>{{ e.note }}</b><br><small class="text-muted">{{ e.date }}</small></div><span class="{{ 'text-success' if e.type=='income' else 'text-danger' }}">{{ '+' if e.type=='income' else '-' }}{{ e.amount }}</span></li>{% endfor %}</ul></div></body></html>"""
+
+# --- Routes ---
+@app.route("/")
+def home():
+    return f"OK - Bot Running using model: {BEST_MODEL_NAME}", 200
+
+@app.route("/admin")
+def admin_page():
+    return render_template_string(ADMIN_HTML, model_id=BEST_MODEL_NAME)
+
+@app.route("/journal")
+def view_journal():
+    user_id = request.args.get('userid')
+    if not user_id: return "Error", 403
     try:
-        doc_ref = db.collection('users').document(user_id)
-        doc_ref.set(creds_data, merge=True)
-    except Exception as e:
-        logging.error(f"儲存 Firebase 失敗: {e}")
+        ledger_id = get_default_ledger_id(user_id)
+        if not ledger_id: return render_template_string(JOURNAL_HTML, entries=[], total_income=0, total_expense=0)
+        docs = db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').order_by('date', direction=firestore.Query.DESCENDING).limit(30).stream()
+        entries, inc, exp = [], 0, 0
+        for doc in docs:
+            d = doc.to_dict()
+            amt = float(d.get('amount', 0))
+            if d.get('type') == 'income': inc += amt
+            else: exp += amt
+            entries.append(d)
+        return render_template_string(JOURNAL_HTML, entries=entries, total_income=int(inc), total_expense=int(exp))
+    except: return "Error loading journal"
+
+@app.route("/login")
+def login():
+    session['uid'] = request.args.get('userid')
+    flow = Flow.from_client_config({"web": {"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}}, scopes=SCOPES, redirect_uri=url_for('oauth2callback', _external=True))
+    url, state = flow.authorization_url(prompt='consent')
+    session['state'] = state
+    return redirect(url)
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    if not session.get('state'): return "Session expired"
+    flow = Flow.from_client_config({"web": {"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}}, scopes=SCOPES, state=session['state'], redirect_uri=url_for('oauth2callback', _external=True))
+    flow.fetch_token(authorization_response=request.url)
+    creds = flow.credentials
+    try: email = build('oauth2', 'v2', credentials=creds).userinfo().get().execute().get('email')
+    except: email = "unknown"
+    save_user_credentials(session['uid'], {'google_email': email, 'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes})
+    line_bot_api.push_message(session['uid'], TextSendMessage(text=f"🎉 綁定成功：{email}", quick_reply=get_quick_reply(session['uid'])))
+    return "綁定成功"
+
+@app.route("/callback", methods=["POST"])
+def callback():
+    try: handler.handle(request.get_data(as_text=True), request.headers["X-Line-Signature"])
+    except: abort(400)
+    return "OK"
+
+# --- 資料庫函式 ---
+def save_user_credentials(user_id, creds_data):
+    try: db.collection('users').document(user_id).set(creds_data, merge=True)
+    except Exception as e: logging.error(f"DB Error: {e}")
 
 def get_user_credentials(user_id):
     try:
-        doc_ref = db.collection('users').document(user_id)
-        doc = doc_ref.get()
-        if doc.exists:
-            return doc.to_dict()
-        else:
-            return None
-    except Exception as e:
-        logging.error(f"讀取 Firebase 失敗: {e}")
-        return None
+        doc = db.collection('users').document(user_id).get()
+        return doc.to_dict() if doc.exists else None
+    except: return None
 
 def delete_user_credentials(user_id):
-    try:
-        db.collection('users').document(user_id).delete()
-        return True
-    except Exception as e:
-        logging.error(f"刪除 Firebase 失敗: {e}")
-        return False
+    try: db.collection('users').document(user_id).delete(); return True
+    except: return False
 
 def save_user_style(user_id, style):
-    try:
-        doc_ref = db.collection('users').document(user_id)
-        doc_ref.set({'reply_style': style}, merge=True)
-    except Exception as e:
-        logging.error(f"儲存風格失敗: {e}")
+    try: db.collection('users').document(user_id).set({'reply_style': style}, merge=True)
+    except: pass
 
 def get_chat_history(user_id):
     try:
@@ -111,811 +215,201 @@ def get_chat_history(user_id):
                 gemini_history.append({"role": h['role'], "parts": [h['text']]})
             return gemini_history
         return []
-    except Exception as e:
-        logging.error(f"讀取對話紀錄失敗: {e}")
-        return []
+    except: return []
 
 def save_chat_history(user_id, user_text, model_text):
     try:
         doc_ref = db.collection('users').document(user_id)
         doc = doc_ref.get()
-        current_history = doc.to_dict().get('chat_history', []) if doc.exists else []
-        
-        current_history.append({"role": "user", "text": user_text})
-        current_history.append({"role": "model", "text": model_text})
-        
-        if len(current_history) > 20:
-            current_history = current_history[-20:]
-            
-        doc_ref.set({'chat_history': current_history}, merge=True)
-
-        log_data = {
-            'user': user_text,
-            'model': model_text,
-            'timestamp': firestore.SERVER_TIMESTAMP
-        }
-        doc_ref.collection('full_logs').add(log_data)
-
-    except Exception as e:
-        logging.error(f"儲存對話紀錄失敗: {e}")
+        current = doc.to_dict().get('chat_history', []) if doc.exists else []
+        current.append({"role": "user", "text": user_text})
+        current.append({"role": "model", "text": model_text})
+        if len(current) > 20: current = current[-20:]
+        doc_ref.set({'chat_history': current}, merge=True)
+        doc_ref.collection('full_logs').add({'user': user_text, 'model': model_text, 'timestamp': firestore.SERVER_TIMESTAMP})
+    except Exception as e: logging.error(f"History Error: {e}")
 
 def clear_chat_history(user_id):
-    try:
-        doc_ref = db.collection('users').document(user_id)
-        doc_ref.set({'chat_history': []}, merge=True)
-        return True
-    except Exception as e:
-        logging.error(f"清空對話失敗: {e}")
-        return False
+    try: db.collection('users').document(user_id).set({'chat_history': []}, merge=True); return True
+    except: return False
 
-# --- 核心邏輯 ---
 def get_default_ledger_id(user_id):
     try:
         ledgers_ref = db.collection('users').document(user_id).collection('ledgers')
-        q_default = ledgers_ref.where('isDefault', '==', True).limit(1)
-        snap_default = q_default.get()
-        if snap_default: return snap_default[0].id
-        q_first = ledgers_ref.order_by('createdAt').limit(1)
-        snap_first = q_first.get()
-        if snap_first: return snap_first[0].id
-        
-        new_ledger = {
-            'name': '預設帳本', 'currency': 'TWD', 'isDefault': True,
-            'createdAt': firestore.SERVER_TIMESTAMP, 'updatedAt': firestore.SERVER_TIMESTAMP
-        }
-        update_time, ref = ledgers_ref.add(new_ledger)
+        snap = ledgers_ref.where('isDefault', '==', True).limit(1).get()
+        if snap: return snap[0].id
+        snap = ledgers_ref.order_by('createdAt').limit(1).get()
+        if snap: return snap[0].id
+        _, ref = ledgers_ref.add({'name': '預設帳本', 'currency': 'TWD', 'isDefault': True, 'createdAt': firestore.SERVER_TIMESTAMP})
         return ref.id
-    except Exception as e:
-        logging.error(f"取得帳本失敗: {e}")
-        return None
+    except: return None
 
 def get_ledger_balance(user_id, ledger_id):
-    """計算帳本總餘額"""
     try:
-        # 注意：若資料量非常大，建議改用 Firebase 的 aggregation queries 或 counter
         docs = db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').stream()
         balance = 0.0
         for doc in docs:
             d = doc.to_dict()
             amt = float(d.get('amount', 0))
-            if d.get('type') == 'income':
-                balance += amt
-            else:
-                balance -= amt
+            if d.get('type') == 'income': balance += amt
+            else: balance -= amt
         return int(balance)
-    except Exception as e:
-        logging.error(f"計算餘額失敗: {e}")
-        return 0
+    except: return 0
 
-# --- Tools 定義 ---
-def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""):
-    """
-    建立日曆行程。
-    【重要】當使用者提到「時間」和「動作」（例如：明天6:00吃飯、下週五開會）時，必須呼叫此工具，禁止只回文字。
-    """
-    return "Event creation request received."
-
-def get_calendar_events(time_min: str = None):
-    return "Calendar list request received."
-
-def add_accounting_entry(item: str, amount: float, category: str = "其他", type: str = "expense", note: str = ""):
-    return "Accounting request received."
-
-def get_recent_emails(query: str = "is:unread", max_results: int = 5):
-    """
-    取得 Gmail 郵件清單與摘要。
-    query: 搜尋語法，例如 'is:unread' (未讀), 'from:博客來', 'subject:發票'。
-    max_results: 數量限制。
-    """
-    return "Gmail request received."
-
+# --- Tools ---
+def create_calendar_event(title: str, start_time: str, end_time: str = None, description: str = ""): return "Event request received."
+def get_calendar_events(time_min: str = None): return "Calendar list request received."
+def add_accounting_entry(item: str, amount: float, category: str = "其他", type: str = "expense", note: str = ""): return "Accounting request received."
+def get_recent_emails(query: str = "is:unread", max_results: int = 5): return "Gmail request received."
 tools_list = [create_calendar_event, get_calendar_events, add_accounting_entry, get_recent_emails]
 
 def get_system_instruction(style=None):
-    utc_now = datetime.datetime.utcnow()
-    taipei_time = utc_now + datetime.timedelta(hours=8)
-    now = taipei_time.strftime("%Y-%m-%d %H:%M:%S")
-    
-    base_instruction = f"""
-    你是一個專業的 Google 日曆助理與生活記帳助手。現在台灣時間是 {now} (週{taipei_time.isoweekday()})。
-    
-    【⚠️ 絕對最高指令 - 不要模仿歷史對話中的錯誤】
-    即使對話紀錄中顯示你過去曾經「只用文字回覆行程」，那是錯誤的！
-    請忽略過去的錯誤示範，從現在開始嚴格遵守以下規則：
-
-    1. 當使用者輸入包含「時間」與「事項」的句子（例：明天6點吃飯、18:00開會、下週三看電影）：
-       - ✅ **必須** 呼叫 `Calendar` 工具。
-       - ❌ **禁止** 僅以文字回覆「好的已新增」、「已幫您建立行程」。**絕對不准**只動口不動手。
-       - 🕒 **時間規則**：
-         * 看到「6:00」、「6點」一律視為 **早上 06:00**。
-         * 看到「18:00」、「18點」一律視為 **晚上 18:00**。
-         * 直接判斷，不要反問使用者。
-    
-    2. 當使用者輸入金額、品項，請呼叫 `add_accounting_entry`。
-
-    3. 若使用者尚未登入或綁定，請引導他們輸入「登入」。
-
-    4. 當使用者問到「信箱」、「郵件」、「Email」相關問題時：
-       - 請呼叫 `get_recent_emails`。
-       
-    5. 除非需要使用工具，否則請用繁體中文簡短回應。
-    """
-    
-    if style:
-        base_instruction += f"\n\n【語氣風格】請依照「{style}」的風格回應：\n{style}"
-        
-    return base_instruction
+    now = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+    instr = f"你是一個專業的 Google 日曆助理與生活記帳助手。現在時間 {now}。\n1. 時間事項必須呼叫 Calendar 工具。\n2. 金額必須呼叫記帳工具。\n3. 信箱問題呼叫 Email 工具。\n4. 未綁定請引導登入。"
+    if style: instr += f"\n\n風格：{style}"
+    return instr
 
 def get_quick_reply(user_id):
     creds = get_user_credentials(user_id)
     is_logged_in = creds and creds.get('refresh_token')
     items = [
-        QuickReplyButton(action=MessageAction(label="📊 查看報表", text="查看報表")), # 新增查看報表按鈕
+        QuickReplyButton(action=MessageAction(label="📊 查看報表", text="查看報表")),
         QuickReplyButton(action=MessageAction(label="🔍 查詢行程", text="查詢接下來的行程")),
         QuickReplyButton(action=MessageAction(label="➕ 新增範例", text="幫我新增明天早上9點開會")),
         QuickReplyButton(action=MessageAction(label="🎭 設定角色", text="設定角色")),
         QuickReplyButton(action=MessageAction(label="🧹 清空對話", text="清空對話")),
         QuickReplyButton(action=MessageAction(label="📧 查詢信件", text="查詢未讀信件")),
-        QuickReplyButton(action=MessageAction(label="❓ 你能做什麼", text="請問你可以幫我做什麼？")),
     ]
-    if is_logged_in:
-        items.append(QuickReplyButton(action=MessageAction(label="👋 登出", text="登出")))
-    else:
-        items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
+    if is_logged_in: items.append(QuickReplyButton(action=MessageAction(label="👋 登出", text="登出")))
+    else: items.append(QuickReplyButton(action=MessageAction(label="🔗 綁定 Google", text="登入")))
     return QuickReply(items=items)
 
-# --- 🆕 優化版：自我介紹 Flex Message ---
-def create_introduction_bubble():
-    return BubbleContainer(
-        header=BoxComponent(
-            layout='vertical',
-            backgroundColor='#ffffff', # 改成白底
-            paddingAll='20px',
-            contents=[
-                TextComponent(text='👋 您好，我是 AI 助理', weight='bold', size='xl', color='#333333', align='center'),
-                TextComponent(
-                    text='您的全能生活智慧管家 🧞‍♂️\n整合日曆、記帳與郵件', # 豐富的文案
-                    weight='bold', 
-                    size='md', 
-                    color='#4c6ef5', # 藍色
-                    align='center', 
-                    margin='sm',
-                    wrap=True
-                )
-            ]
-        ),
-        body=BoxComponent(
-            layout='vertical',
-            paddingAll='20px',
-            spacing='md',
-            contents=[
-                # 1. 日曆功能
-                BoxComponent(
-                    layout='horizontal',
-                    spacing='md',
-                    contents=[
-                        TextComponent(text='📅', size='xxl', flex=0),
-                        BoxComponent(
-                            layout='vertical',
-                            flex=1,
-                            contents=[
-                                TextComponent(text='行程管理', weight='bold', size='md', color='#333333'),
-                                TextComponent(text='輸入「明天6點吃飯」、「下週五開會」', size='xs', color='#888888', wrap=True)
-                            ]
-                        )
-                    ]
-                ),
-                SeparatorComponent(color='#f0f0f0', margin='md'),
-                # 2. 記帳功能
-                BoxComponent(
-                    layout='horizontal',
-                    spacing='md',
-                    contents=[
-                        TextComponent(text='💰', size='xxl', flex=0),
-                        BoxComponent(
-                            layout='vertical',
-                            flex=1,
-                            contents=[
-                                TextComponent(text='生活記帳', weight='bold', size='md', color='#333333'),
-                                TextComponent(text='輸入「午餐100」、「飲料50」', size='xs', color='#888888', wrap=True)
-                            ]
-                        )
-                    ]
-                ),
-                SeparatorComponent(color='#f0f0f0', margin='md'),
-                # 3. 郵件功能
-                BoxComponent(
-                    layout='horizontal',
-                    spacing='md',
-                    contents=[
-                        TextComponent(text='📧', size='xxl', flex=0),
-                        BoxComponent(
-                            layout='vertical',
-                            flex=1,
-                            contents=[
-                                TextComponent(text='郵件查詢', weight='bold', size='md', color='#333333'),
-                                TextComponent(text='輸入「最近有沒有信」、「查博客來的信」', size='xs', color='#888888', wrap=True)
-                            ]
-                        )
-                    ]
-                )
-            ]
-        ),
-        footer=BoxComponent(
-            layout='vertical',
-            spacing='sm',
-            paddingAll='20px',
-            contents=[
-                ButtonComponent(
-                    style='primary',
-                    height='sm',
-                    color='#4c6ef5',
-                    action=MessageAction(label='✨ 立刻試試看', text='幫我新增明天早上9點開會')
-                )
-            ]
-        )
-    )
-
-# --- Flex Message ---
+# --- Bubbles ---
+def create_introduction_bubble(): return BubbleContainer(body=BoxComponent(layout='vertical', contents=[TextComponent(text='👋 我是 AI 助理', weight='bold', size='xl', align='center'), TextComponent(text='日曆・記帳・郵件', align='center', margin='md')]), footer=BoxComponent(layout='vertical', contents=[ButtonComponent(style='primary', action=MessageAction(label='✨ 試試看', text='幫我新增明天早上9點開會'))]))
 def create_event_bubble(event_data):
-    summary = event_data.get('summary') or event_data.get('title') or '未命名行程'
-    html_link = event_data.get('htmlLink')
-    start = event_data['start']
-    
-    time_str = ""
-    if 'dateTime' in start:
-        dt = datetime.datetime.fromisoformat(start['dateTime'])
-        time_str = dt.strftime('%Y-%m-%d %H:%M')
-    else:
-        time_str = f"{start['date']} (全天)"
-
-    return BubbleContainer(
-        header=BoxComponent(
-            layout='horizontal',
-            backgroundColor='#1DB446',
-            paddingAll='15px',
-            contents=[
-                TextComponent(text='📅', size='3xl', flex=0, align='center', gravity='center'),
-                TextComponent(text='行程已建立', weight='bold', color='#ffffff', size='lg', align='start', gravity='center', margin='md', flex=1)
-            ]
-        ),
-        body=BoxComponent(
-            layout='vertical',
-            contents=[
-                TextComponent(text=summary, weight='bold', size='3xl', margin='md', wrap=True, color='#111111'),
-                BoxComponent(
-                    layout='vertical',
-                    margin='lg',
-                    spacing='sm',
-                    contents=[
-                        BoxComponent(
-                            layout='baseline', spacing='sm',
-                            contents=[
-                                TextComponent(text='時間', color='#aaaaaa', size='sm', flex=1),
-                                TextComponent(text=time_str, wrap=True, color='#666666', size='md', flex=4, weight="bold")
-                            ],
-                        ),
-                    ],
-                )
-            ],
-        ),
-        footer=BoxComponent(
-            layout='vertical', spacing='sm',
-            contents=[
-                ButtonComponent(
-                    style='secondary', height='sm',
-                    action=URIAction(label='✏️ 編輯 / 查看', uri=html_link),
-                    color='#1DB446'
-                )
-            ],
-            paddingAll='16px'
-        )
-    )
-
-# 🔥 重新設計的記帳卡片 (依照您的截圖風格)
+    summary = event_data.get('summary') or '未命名行程'
+    start = event_data['start'].get('dateTime', event_data['start'].get('date'))
+    return BubbleContainer(header=BoxComponent(layout='horizontal', backgroundColor='#1DB446', contents=[TextComponent(text='📅 行程已建立', color='#ffffff', weight='bold')]), body=BoxComponent(layout='vertical', contents=[TextComponent(text=summary, weight='bold', size='xl'), TextComponent(text=start, size='sm', color='#666666', margin='md')]), footer=BoxComponent(layout='vertical', contents=[ButtonComponent(style='secondary', action=URIAction(label='查看', uri=event_data.get('htmlLink')))]))
 def create_accounting_bubble(data, user_id):
-    # 判斷收支顏色 (支出：紅，收入：綠)
-    is_income = data.get('type') == 'income'
-    # 依照多數記帳 APP 慣例：收入綠色，支出紅色
-    theme_color = '#10b981' if is_income else '#ef4444' 
-    
-    # 產生網頁報表連結 (給編輯按鈕用)
-    report_url = url_for('view_journal', userid=user_id, _external=True)
+    color = '#10b981' if data.get('type') == 'income' else '#ef4444'
+    return BubbleContainer(body=BoxComponent(layout='vertical', contents=[TextComponent(text=data.get('category', '其他'), weight='bold', color=color), TextComponent(text=f"${int(data.get('amount'))}", weight='bold', size='3xl', margin='md'), TextComponent(text=f"備註: {data.get('item', '')}", size='sm', color='#aaaaaa', margin='md')]), footer=BoxComponent(layout='vertical', contents=[ButtonComponent(style='secondary', action=URIAction(label='編輯', uri=url_for('view_journal', userid=user_id, _external=True)))]))
 
-    return BubbleContainer(
-        body=BoxComponent(
-            layout='vertical',
-            paddingAll='20px',
-            contents=[
-                # 第一行：分類名稱 + 預設帳本標籤
-                BoxComponent(
-                    layout='baseline',
-                    contents=[
-                        TextComponent(text=data.get('category', '其他'), weight='bold', size='xl', color=theme_color, flex=1),
-                        # 模擬 Badge 效果
-                        BoxComponent(
-                            layout='vertical',
-                            backgroundColor=theme_color,
-                            cornerRadius='12px',
-                            paddingAll='3px',
-                            paddingStart='8px',
-                            paddingEnd='8px',
-                            flex=0,
-                            contents=[
-                                TextComponent(text='預設帳本', size='xs', color='#ffffff', weight='bold')
-                            ]
-                        )
-                    ]
-                ),
-                # 第二行：金額
-                BoxComponent(
-                    layout='baseline',
-                    margin='md',
-                    contents=[
-                        TextComponent(text=str(int(data.get('amount'))), weight='bold', size='4xl', color='#333333', flex=0),
-                        TextComponent(text='NT$', size='sm', color='#999999', margin='sm', flex=0, gravity='bottom')
-                    ]
-                ),
-                # 第三行：帳本餘額
-                TextComponent(text=f"帳本餘額: {data.get('balance')}", size='xs', color='#aaaaaa', margin='xs'),
-                
-                SeparatorComponent(margin='lg', color='#f0f0f0'),
-                
-                # 詳細資訊區塊
-                BoxComponent(
-                    layout='vertical',
-                    margin='lg',
-                    spacing='sm',
-                    contents=[
-                        # 備註 (Item + Note)
-                        BoxComponent(
-                            layout='baseline',
-                            contents=[
-                                TextComponent(text='備註', color='#666666', size='sm', flex=2),
-                                TextComponent(text=data.get('item', '無'), color='#333333', size='sm', flex=5, align='end', wrap=True)
-                            ]
-                        ),
-                        # 日期
-                        BoxComponent(
-                            layout='baseline',
-                            contents=[
-                                TextComponent(text='日期', color='#666666', size='sm', flex=2),
-                                TextComponent(text=data.get('date'), color='#333333', size='sm', flex=5, align='end')
-                            ]
-                        )
-                    ]
-                ),
-                # 底部按鈕
-                BoxComponent(
-                    layout='vertical',
-                    margin='xl',
-                    contents=[
-                        ButtonComponent(
-                            style='secondary',
-                            height='sm',
-                            color='#f0f0f0',
-                            action=URIAction(label='編輯', uri=report_url) # 連結到你的報表網頁
-                        )
-                    ]
-                )
-            ]
-        )
-    )
-
-# --- 🆕 網頁版 HTML 模板 (內嵌) ---
-JOURNAL_HTML = """
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>收支日記本</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #f8f9fa; font-family: "Noto Sans TC", sans-serif; }
-        .card { border-radius: 15px; border: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        .total-income { color: #10b981; }
-        .total-expense { color: #ef4444; }
-        .transaction-item { border-left: 5px solid #ccc; background: white; padding: 15px; margin-bottom: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .type-income { border-left-color: #10b981; }
-        .type-expense { border-left-color: #ef4444; }
-        .amount-income { color: #10b981; font-weight: bold; }
-        .amount-expense { color: #ef4444; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="container py-4">
-        <h2 class="text-center mb-4">📖 我的收支日記</h2>
-        
-        <div class="row text-center mb-4">
-            <div class="col-4">
-                <div class="card p-3">
-                    <small class="text-muted">總收入</small>
-                    <h4 class="total-income">+{{ total_income }}</h4>
-                </div>
-            </div>
-            <div class="col-4">
-                <div class="card p-3">
-                    <small class="text-muted">總支出</small>
-                    <h4 class="total-expense">-{{ total_expense }}</h4>
-                </div>
-            </div>
-            <div class="col-4">
-                <div class="card p-3">
-                    <small class="text-muted">結餘</small>
-                    <h4 class="{{ 'text-success' if (total_income - total_expense) >= 0 else 'text-danger' }}">
-                        {{ total_income - total_expense }}
-                    </h4>
-                </div>
-            </div>
-        </div>
-
-        <h5 class="mb-3">最近交易紀錄</h5>
-        <div>
-            {% if entries %}
-                {% for entry in entries %}
-                <div class="transaction-item {{ 'type-income' if entry.type == 'income' else 'type-expense' }} d-flex justify-content-between align-items-center">
-                    <div>
-                        <div class="fw-bold">{{ entry.note }}</div>
-                        <small class="text-muted">{{ entry.date }} | <span class="badge bg-light text-dark border">{{ entry.categoryId }}</span></small>
-                    </div>
-                    <div class="{{ 'amount-income' if entry.type == 'income' else 'amount-expense' }}">
-                        {{ '+' if entry.type == 'income' else '-' }}{{ entry.amount }}
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="text-center text-muted py-5">
-                    <p>目前還沒有記帳紀錄喔！<br>試試在 LINE 輸入「午餐100」</p>
-                </div>
-            {% endif %}
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-# --- Routes ---
-@app.route("/")
-def home():
-    return "OK - Bot Running", 200
-
-# --- 🆕 網頁版日記 Route ---
-@app.route("/journal")
-def view_journal():
-    user_id = request.args.get('userid')
-    if not user_id:
-        return "錯誤：無效的使用者連結。請從 LINE 點擊選單進入。", 403
-
-    try:
-        ledger_id = get_default_ledger_id(user_id)
-        if not ledger_id:
-            return render_template_string(JOURNAL_HTML, entries=[], total_income=0, total_expense=0)
-
-        # 讀取交易紀錄，按日期降序排列
-        docs = db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').order_by('date', direction=firestore.Query.DESCENDING).limit(50).stream()
-        
-        entries = []
-        total_income = 0
-        total_expense = 0
-
-        for doc in docs:
-            d = doc.to_dict()
-            amt = float(d.get('amount', 0))
-            if d.get('type') == 'income':
-                total_income += amt
-            else:
-                total_expense += amt
-            entries.append(d)
-
-        return render_template_string(JOURNAL_HTML, entries=entries, total_income=int(total_income), total_expense=int(total_expense))
-
-    except Exception as e:
-        logging.error(f"讀取日記頁面失敗: {e}")
-        return f"讀取資料錯誤: {e}"
-
-@app.route("/login")
-def login():
-    line_user_id = request.args.get('userid')
-    if not line_user_id: return "錯誤：無效的使用者 ID"
-    session.permanent = True
-    session['line_user_id'] = line_user_id
-    client_config = {"web": {"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}}
-    redirect_uri = url_for('oauth2callback', _external=True)
-    flow = Flow.from_client_config(client_config=client_config, scopes=SCOPES, redirect_uri=redirect_uri)
-    authorization_url, state = flow.authorization_url(access_type='offline', include_granted_scopes='true', prompt='consent')
-    session['state'] = state
-    return redirect(authorization_url)
-
-@app.route("/oauth2callback")
-def oauth2callback():
-    if 'state' not in session: return "錯誤：Session 失效。"
-    state = session['state']
-    line_user_id = session.get('line_user_id')
-    if not line_user_id: return "錯誤：無法識別使用者。"
-    client_config = {"web": {"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET, "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": "https://oauth2.googleapis.com/token"}}
-    redirect_uri = url_for('oauth2callback', _external=True)
-    flow = Flow.from_client_config(client_config=client_config, scopes=SCOPES, state=state, redirect_uri=redirect_uri)
-    try:
-        flow.fetch_token(authorization_response=request.url)
-        creds = flow.credentials
-        try:
-            user_info_service = build('oauth2', 'v2', credentials=creds)
-            user_info = user_info_service.userinfo().get().execute()
-            user_email = user_info.get('email')
-        except: user_email = "unknown"
-        
-        creds_data = {'google_email': user_email, 'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes}
-        save_user_credentials(line_user_id, creds_data)
-        try:
-            line_bot_api.push_message(line_user_id, TextSendMessage(text=f"🎉 綁定成功！帳號：{user_email}", quick_reply=get_quick_reply(line_user_id)))
-        except: pass
-        return f"綁定成功！帳號：{user_email}。請關閉視窗。"
-    except Exception as e: return f"綁定失敗：{e}"
-
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers["X-Line-Signature"]
-    body = request.get_data(as_text=True)
-    try: handler.handle(body, signature)
-    except InvalidSignatureError: abort(400)
-    return "OK"
-
-def execute_api_logic(user_id, function_name, args):
+# --- API Logic ---
+def execute_api_logic(user_id, fname, args):
     creds_info = get_user_credentials(user_id)
-    if not creds_info or not creds_info.get('refresh_token'):
-        return "錯誤：請先登入。"
+    if not creds_info or not creds_info.get('refresh_token'): return "請先登入"
+    
+    if fname == "add_accounting_entry":
+        ledger_id = get_default_ledger_id(user_id)
+        if not ledger_id: return "找無帳本"
+        entry = {'type': args.get('type', 'expense'), 'amount': float(args.get('amount', 0)), 'categoryId': args.get('category', '其他'), 'note': args.get('item', '') + ' ' + args.get('note', ''), 'date': datetime.datetime.now().strftime("%Y-%m-%d"), 'createdAt': firestore.SERVER_TIMESTAMP}
+        db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').add(entry)
+        entry['balance'] = get_ledger_balance(user_id, ledger_id)
+        return {'action': 'accounting', 'data': entry}
 
-    # 記帳
-    if function_name == "add_accounting_entry":
-        try:
-            ledger_id = get_default_ledger_id(user_id)
-            if not ledger_id: return "錯誤：無法取得帳本。"
-            now_iso = datetime.datetime.now().strftime("%Y-%m-%d")
-            entry_data = {'type': args.get('type', 'expense'), 'amount': float(args.get('amount', 0)), 'categoryId': args.get('category', '其他'), 'note': args.get('item', '') + ' ' + args.get('note', ''), 'date': now_iso, 'createdAt': firestore.SERVER_TIMESTAMP, 'updatedAt': firestore.SERVER_TIMESTAMP, 'source': 'line-bot'}
-            db.collection('users').document(user_id).collection('ledgers').document(ledger_id).collection('entries').add(entry_data)
-            
-            # 🔥 新增：計算最新餘額 (為了顯示在卡片上)
-            current_balance = get_ledger_balance(user_id, ledger_id)
-            
-            return {
-                'status': 'success', 
-                'action': 'accounting', 
-                'data': {
-                    'item': args.get('item', ''), 
-                    'amount': entry_data['amount'], 
-                    'category': entry_data['categoryId'], 
-                    'type': entry_data['type'], 
-                    'date': entry_data['date'],
-                    'balance': current_balance # 回傳餘額
-                }
-            }
-        except Exception as e:
-            logging.error(f"記帳失敗: {e}")
-            return f"記帳錯誤: {e}"
-
-    # Google 服務 (日曆 & Gmail)
     creds = Credentials.from_authorized_user_info(creds_info)
-    try:
-        if creds.expired and creds.refresh_token:
-            from google.auth.transport.requests import Request
-            creds.refresh(Request())
-            creds_data = {'google_email': creds_info.get('google_email'), 'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes}
-            save_user_credentials(user_id, creds_data)
-        
-        # === 日曆功能 ===
-        if function_name in ["create_calendar_event", "get_calendar_events"]:
-            service = build('calendar', 'v3', credentials=creds)
-            
-            if function_name == "create_calendar_event":
-                summary = args.get('title') or args.get('summary') or args.get('event_name') or list(args.values())[0]
-                start_time = args.get('start_time')
-                end_time = args.get('end_time')
-                
-                # 🛡️ 400 錯誤修正區塊
-                if not end_time and start_time:
-                    try:
-                        clean_start = start_time.replace('Z', '+00:00')
-                        dt = datetime.datetime.fromisoformat(clean_start)
-                        end_time = (dt + datetime.timedelta(hours=1)).isoformat()
-                    except Exception as e:
-                        logging.error(f"Time parse error: {e}")
-                        end_time = start_time
+    if creds.expired: creds.refresh(requests.Request()); save_user_credentials(user_id, {'token': creds.token, 'refresh_token': creds.refresh_token, 'token_uri': creds.token_uri, 'client_id': creds.client_id, 'client_secret': creds.client_secret, 'scopes': creds.scopes, 'google_email': creds_info.get('google_email')})
+    
+    if fname == "create_calendar_event":
+        service = build('calendar', 'v3', credentials=creds)
+        start = args.get('start_time')
+        end = args.get('end_time') or start
+        res = service.events().insert(calendarId='primary', body={'summary': args.get('title', '新行程'), 'start': {'dateTime': start, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end, 'timeZone': 'Asia/Taipei'}}).execute()
+        res['action'] = 'calendar_create'
+        return res
+    
+    if fname == "get_calendar_events":
+        service = build('calendar', 'v3', credentials=creds)
+        events = service.events().list(calendarId='primary', timeMin=datetime.datetime.utcnow().isoformat()+'Z', maxResults=5, singleEvents=True, orderBy='startTime').execute().get('items', [])
+        return "近期行程：\n" + "\n".join([f"- {e['start'].get('dateTime', e['start'].get('date'))} {e.get('summary')}" for e in events]) if events else "無近期行程"
 
-                event = {'summary': summary, 'description': args.get('description', ''), 'start': {'dateTime': start_time, 'timeZone': 'Asia/Taipei'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Taipei'}}
-                created_event = service.events().insert(calendarId='primary', body=event).execute()
-                created_event['action'] = 'calendar_create'
-                return created_event
-                
-            elif function_name == "get_calendar_events":
-                now = datetime.datetime.utcnow().isoformat() + 'Z'
-                time_min = args.get('time_min', now)
-                events_result = service.events().list(calendarId='primary', timeMin=time_min, maxResults=10, singleEvents=True, orderBy='startTime').execute()
-                events = events_result.get('items', [])
-                if not events: return "接下來沒有行程。"
-                result_text = "接下來的行程：\n"
-                for event in events:
-                    start = event['start'].get('dateTime', event['start'].get('date'))
-                    summary = event.get('summary', '無標題')
-                    result_text += f"- {start}: {summary}\n"
-                return result_text
-
-        # === Gmail 功能 ===
-        elif function_name == "get_recent_emails":
-            service = build('gmail', 'v1', credentials=creds)
-            query = args.get('query', 'is:unread')
-            max_results = int(args.get('max_results', 5))
-            
-            results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
-            messages = results.get('messages', [])
-            
-            if not messages:
-                return "📭 找不到符合條件的郵件。"
-            
-            email_summaries = []
-            for msg in messages:
-                txt = service.users().messages().get(userId='me', id=msg['id'], format='metadata').execute()
-                payload = txt.get('payload', {})
-                headers = payload.get('headers', [])
-                snippet = txt.get('snippet', '(無摘要)')
-                
-                subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(無標題)')
-                sender = next((h['value'] for h in headers if h['name'] == 'From'), '(未知)')
-                
-                email_summaries.append(f"📩 寄件者：{sender}\n標題：{subject}\n摘要：{snippet}\n")
-            
-            return "\n---\n".join(email_summaries)
-
-    except Exception as e: return f"執行錯誤：{str(e)}"
-    return "未知的操作。"
+    if fname == "get_recent_emails":
+        service = build('gmail', 'v1', credentials=creds)
+        msgs = service.users().messages().list(userId='me', q=args.get('query', 'is:unread'), maxResults=5).execute().get('messages', [])
+        if not msgs: return "無新信件"
+        res = []
+        for m in msgs:
+            h = service.users().messages().get(userId='me', id=m['id'], format='metadata').execute().get('payload', {}).get('headers', [])
+            sub = next((x['value'] for x in h if x['name']=='Subject'), '無題')
+            res.append(f"📩 {sub}")
+        return "\n".join(res)
+    
+    return "未知操作"
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_msg = event.message.text.strip()
-    user_id = event.source.user_id
-
+    uid = event.source.user_id
+    msg = event.message.text.strip()
+    
+    if msg == "清空對話": clear_chat_history(uid); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已清空", quick_reply=get_quick_reply(uid))); return
+    if msg in ["功能介紹", "請問你可以幫我做什麼？"]: line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="介紹", contents=create_introduction_bubble(), quick_reply=get_quick_reply(uid))); return
+    if msg == "登出": delete_user_credentials(uid); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已登出", quick_reply=get_quick_reply(uid))); return
+    if msg == "設定角色": line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入：設定風格：xxx", quick_reply=get_quick_reply(uid))); return
+    if msg.startswith("設定風格："): save_user_style(uid, msg.split("：")[1]); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已設定", quick_reply=get_quick_reply(uid))); return
+    if msg == "查看報表": line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="報表", contents=BubbleContainer(body=BoxComponent(layout='vertical', contents=[TextComponent(text='📊 點擊查看', align='center')]), footer=BoxComponent(layout='vertical', contents=[ButtonComponent(style='primary', action=URIAction(label='開啟', uri=url_for('view_journal', userid=uid, _external=True)))])))); return
+    
     try:
-        url = "https://api.line.me/v2/bot/chat/loading/start"
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
-        data = {"chatId": user_id, "loadingSeconds": 20}
-        requests.post(url, headers=headers, json=data)
-    except Exception as e:
-        logging.warning(f"Failed to send loading animation: {e}")
-
-    # --- 🆕 查看報表指令 ---
-    if user_msg == "查看報表":
-        # 產生該使用者的專屬報表連結
-        report_url = url_for('view_journal', userid=user_id, _external=True)
+        requests.post("https://api.line.me/v2/bot/chat/loading/start", headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}, json={"chatId": uid, "loadingSeconds": 20})
         
-        bubble = BubbleContainer(
-            body=BoxComponent(
-                layout='vertical',
-                contents=[
-                    TextComponent(text='📊 收支日報表', weight='bold', size='xl'),
-                    TextComponent(text='點擊下方按鈕查看詳細收支紀錄與統計', size='sm', color='#666666', margin='sm', wrap=True)
-                ]
-            ),
-            footer=BoxComponent(
-                layout='vertical',
-                contents=[
-                    ButtonComponent(
-                        style='primary',
-                        action=URIAction(label='開啟報表', uri=report_url)
-                    )
-                ]
-            )
-        )
-        line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="查看報表", contents=bubble, quick_reply=get_quick_reply(user_id)))
-        return
-
-    # 🆕 攔截「請問你可以幫我做什麼？」
-    if user_msg == "請問你可以幫我做什麼？" or user_msg == "功能介紹":
-        bubble = create_introduction_bubble()
-        line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="功能介紹", contents=bubble, quick_reply=get_quick_reply(user_id)))
-        return
-
-    if user_msg == "設定角色":
-        msg = """🎭 角色設定模式
-請輸入「設定風格：」加上您想要的角色。
-
-範例：
-- 設定風格：毒舌管家
-- 設定風格：溫柔秘書
-- 設定風格：愛生氣的男朋友
-
-💡 設定後，即使按「清空對話」，我還是會記得這個角色喔！"""
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=get_quick_reply(user_id)))
-        return
-
-    if user_msg.startswith("設定風格："):
-        new_style = user_msg.replace("設定風格：", "").strip()
-        save_user_style(user_id, new_style)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"✅ 風格已設定為「{new_style}」！", quick_reply=get_quick_reply(user_id)))
-        return
-
-    if user_msg == "清空對話":
-        clear_chat_history(user_id)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🧹 對話記憶已清空！", quick_reply=get_quick_reply(user_id)))
-        return
-
-    if user_msg.lower() in ["id", "uid"]:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ID: {user_id}", quick_reply=get_quick_reply(user_id)))
-        return
-
-    if user_msg == "登出":
-        delete_user_credentials(user_id)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已登出！", quick_reply=get_quick_reply(user_id)))
-        return
-
-    if user_msg in ["登入", "綁定", "連結Google"]:
-        login_url = url_for('login', userid=user_id, _external=True)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"請點擊連結進行綁定：\n{login_url}", quick_reply=get_quick_reply(user_id)))
-        return
-
-    try:
-        doc = db.collection('users').document(user_id).get()
-        history = []
-        user_style = None
+        doc = db.collection('users').document(uid).get()
+        hist = []
+        style = None
         if doc.exists:
-            data = doc.to_dict()
-            user_style = data.get('reply_style')
-            for h in data.get('chat_history', []): history.append({"role": h['role'], "parts": [h['text']]})
-
-        current_instruction = get_system_instruction(user_style)
-        model = genai.GenerativeModel("gemini-2.0-flash", tools=tools_list, system_instruction=current_instruction)
-        chat = model.start_chat(history=history, enable_automatic_function_calling=False)
-        response = chat.send_message(user_msg)
+            d = doc.to_dict()
+            style = d.get('reply_style')
+            for h in d.get('chat_history', []): hist.append({"role": h['role'], "parts": [h['text']]})
+            
+        # 🔥🔥🔥 使用自動偵測到的最佳模型 (不再寫死) 🔥🔥🔥
+        # 如果偵測失敗，這裡預設是 'gemini-1.5-flash'
+        target_model = BEST_MODEL_NAME
         
-        flex_bubbles = []
-        text_responses = []
+        try:
+            model = genai.GenerativeModel(target_model, tools=tools_list, system_instruction=get_system_instruction(style))
+            chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
+            response = chat.send_message(msg)
+        except Exception as e:
+            # 萬一連自動偵測的都失敗，最後一次嘗試用 'gemini-pro' (1.0)
+            logging.error(f"Selected model {target_model} failed: {e}. Trying fallback 'gemini-pro'.")
+            model = genai.GenerativeModel("gemini-pro", tools=tools_list, system_instruction=get_system_instruction(style))
+            chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
+            response = chat.send_message(msg)
 
+        reply_objs = []
+        txt_res = []
+        
         if response.parts:
-            for part in response.parts:
-                if part.function_call:
-                    fc = part.function_call
-                    fname = fc.name
-                    fargs = dict(fc.args)
-                    api_result = execute_api_logic(user_id, fname, fargs)
-                    if isinstance(api_result, dict):
-                        if api_result.get('action') == 'accounting':
-                            # 🔥 使用新版函式，並傳入 user_id 以產生編輯連結
-                            flex_bubbles.append(create_accounting_bubble(api_result['data'], user_id))
-                            save_chat_history(user_id, user_msg, f"已記帳：{api_result['data']['item']}")
-                        elif api_result.get('action') == 'calendar_create':
-                            flex_bubbles.append(create_event_bubble(api_result))
-                            save_chat_history(user_id, user_msg, f"已建立行程：{api_result.get('summary')}")
-                        else:
-                            text_responses.append(str(api_result))
-                    else:
-                        text_responses.append(str(api_result))
-                    chat.send_message({"function_response": {"name": fname, "response": {"result": "Success" if isinstance(api_result, dict) else str(api_result)}}})
-                elif part.text:
-                    text_responses.append(part.text)
-                    save_chat_history(user_id, user_msg, part.text)
-
-        reply_messages = []
-        if flex_bubbles:
-            if len(flex_bubbles) > 1:
-                container = CarouselContainer(contents=flex_bubbles)
-                reply_messages.append(FlexSendMessage(alt_text="處理結果", contents=container))
-            else:
-                reply_messages.append(FlexSendMessage(alt_text="處理結果", contents=flex_bubbles[0]))
+            for p in response.parts:
+                if p.function_call:
+                    api_res = execute_api_logic(uid, p.function_call.name, dict(p.function_call.args))
+                    chat.send_message(genai.protos.Content(parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(name=p.function_call.name, response={"result": str(api_res)}))]))
+                    if isinstance(api_res, dict):
+                        if api_res.get('action') == 'accounting': reply_objs.append(create_accounting_bubble(api_res['data'], uid))
+                        elif api_res.get('action') == 'calendar_create': reply_objs.append(create_event_bubble(api_res))
+                    else: txt_res.append(str(api_res))
+                elif p.text:
+                    txt_res.append(p.text)
+                    save_chat_history(uid, msg, p.text)
         
-        if text_responses:
-            combined_text = "\n".join(text_responses).strip()
-            if combined_text:
-                reply_messages.append(TextSendMessage(text=combined_text))
-
-        if reply_messages:
-            # 🔥 確保最後一個訊息帶有 Quick Reply
-            reply_messages[-1].quick_reply = get_quick_reply(user_id)
-            line_bot_api.reply_message(event.reply_token, reply_messages)
+        if reply_objs: reply_objs = [FlexSendMessage(alt_text="結果", contents=CarouselContainer(contents=reply_objs) if len(reply_objs)>1 else reply_objs[0])]
+        if txt_res: reply_objs.append(TextSendMessage(text="\n".join(txt_res)))
+        
+        if reply_objs:
+            reply_objs[-1].quick_reply = get_quick_reply(uid)
+            line_bot_api.reply_message(event.reply_token, reply_objs)
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="處理完成", quick_reply=get_quick_reply(user_id)))
-
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="處理完畢", quick_reply=get_quick_reply(uid)))
+            
     except Exception as e:
-        logging.exception("Error")
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="系統忙碌中", quick_reply=get_quick_reply(user_id)))
+        # 🔥🔥🔥 這裡會直接告訴你錯誤原因 🔥🔥🔥
+        err_msg = str(e)
+        if "404" in err_msg:
+            err_msg = f"找不到模型: {BEST_MODEL_NAME}。請確認 API Key 權限。"
+        elif "quota" in err_msg.lower():
+            err_msg = "Google API 配額已滿 (429)。請更換 API Key 或稍後再試。"
+            
+        logging.error(e)
+        # 讓機器人直接回傳錯誤原因給你看
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"❌ 系統錯誤: {err_msg}", quick_reply=get_quick_reply(uid)))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
