@@ -48,6 +48,9 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai.configure(api_key=GEMINI_API_KEY)
 
+# 🔥 修改點 1：先給 db 一個預設值，避免初始化失敗時變數不存在
+db = None
+
 try:
     if not firebase_admin._apps:
         cred_dict = json.loads(FIREBASE_CREDENTIALS_JSON)
@@ -773,6 +776,14 @@ def execute_api_logic(user_id, function_name, args):
 def handle_message(event):
     user_msg = event.message.text.strip()
     user_id = event.source.user_id
+
+    # 🔥 修改點 2：加入資料庫連線檢查，防止無限 Loop「系統忙碌中」
+    if db is None:
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text="❌ 系統錯誤：資料庫未連線，請檢查 Render 環境變數 (Firebase Credentials)。")
+        )
+        return
 
     try:
         url = "https://api.line.me/v2/bot/chat/loading/start"
