@@ -22,6 +22,7 @@ from googleapiclient.discovery import build
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+# 設定 Log
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
@@ -46,6 +47,16 @@ if not all([LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, GEMINI_API_KEY, GOOG
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai.configure(api_key=GEMINI_API_KEY)
+
+# 🔥 系統啟動時檢查版本 (Debug 用)
+try:
+    logging.info(f"GenAI Library Version: {genai.__version__}")
+    logging.info("Available Models:")
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            logging.info(f" - {m.name}")
+except Exception as e:
+    logging.error(f"Check Models Failed: {e}")
 
 db = None
 try:
@@ -91,7 +102,17 @@ def save_user_style(user_id, style):
     except: pass
 
 def get_chat_history(user_id):
-    return [] # 暫時簡化以減少錯誤變因
+    try:
+        doc = db.collection('users').document(user_id).get()
+        if doc.exists:
+            data = doc.to_dict()
+            raw_history = data.get('chat_history', [])
+            gemini_history = []
+            for h in raw_history:
+                gemini_history.append({"role": h['role'], "parts": [h['text']]})
+            return gemini_history
+        return []
+    except: return []
 
 def save_chat_history(user_id, user_text, model_text):
     try:
@@ -273,55 +294,4 @@ def handle_message(event):
     if db is None: line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ DB Error")); return
     
     if msg == "清空對話": clear_chat_history(uid); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已清空", quick_reply=get_quick_reply(uid))); return
-    if msg in ["功能介紹", "請問你可以幫我做什麼？"]: line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="介紹", contents=create_introduction_bubble(), quick_reply=get_quick_reply(uid))); return
-    if msg == "登出": delete_user_credentials(uid); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已登出", quick_reply=get_quick_reply(uid))); return
-    if msg == "設定角色": line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入：設定風格：xxx", quick_reply=get_quick_reply(uid))); return
-    if msg.startswith("設定風格："): save_user_style(uid, msg.split("：")[1]); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已設定", quick_reply=get_quick_reply(uid))); return
-    
-    try:
-        requests.post("https://api.line.me/v2/bot/chat/loading/start", headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}, json={"chatId": uid, "loadingSeconds": 20})
-        
-        doc = db.collection('users').document(uid).get()
-        hist = []
-        style = None
-        if doc.exists:
-            d = doc.to_dict()
-            style = d.get('reply_style')
-            for h in d.get('chat_history', []): hist.append({"role": h['role'], "parts": [h['text']]})
-            
-        # 🔥 強制使用 gemini-pro (1.0) 避免 404 錯誤
-        model = genai.GenerativeModel("gemini-pro", tools=tools_list, system_instruction=get_system_instruction(style))
-        chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
-        response = chat.send_message(msg)
-        
-        reply_objs = []
-        txt_res = []
-        
-        if response.parts:
-            for p in response.parts:
-                if p.function_call:
-                    api_res = execute_api_logic(uid, p.function_call.name, dict(p.function_call.args))
-                    chat.send_message(genai.protos.Content(parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(name=p.function_call.name, response={"result": str(api_res)}))]))
-                    if isinstance(api_res, dict):
-                        if api_res.get('action') == 'accounting': reply_objs.append(create_accounting_bubble(api_res['data'], uid))
-                        elif api_res.get('action') == 'calendar_create': reply_objs.append(create_event_bubble(api_res))
-                    else: txt_res.append(str(api_res))
-                elif p.text:
-                    txt_res.append(p.text)
-                    save_chat_history(uid, msg, p.text)
-        
-        if reply_objs: reply_objs = [FlexSendMessage(alt_text="結果", contents=CarouselContainer(contents=reply_objs) if len(reply_objs)>1 else reply_objs[0])]
-        if txt_res: reply_objs.append(TextSendMessage(text="\n".join(txt_res)))
-        
-        if reply_objs:
-            reply_objs[-1].quick_reply = get_quick_reply(uid)
-            line_bot_api.reply_message(event.reply_token, reply_objs)
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="處理完畢", quick_reply=get_quick_reply(uid)))
-            
-    except Exception as e:
-        logging.error(e)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"錯誤: {str(e)}", quick_reply=get_quick_reply(uid)))
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    if msg in ["功能介紹", "請問你可以幫我做什麼？"]: line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="介紹
