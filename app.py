@@ -40,25 +40,49 @@ app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
+# --- 全域變數：儲存自動偵測到的最佳模型名稱 ---
+BEST_MODEL_NAME = None
+
 # --- 初始化 ---
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # 🔥 關鍵診斷：啟動時檢查 Key 權限與可用模型
+    
+    # 🔥🔥🔥 關鍵修正：自動偵測最佳模型 🔥🔥🔥
     try:
-        logging.info("🔍 --- 開始檢查 Google Gemini API Key ---")
-        logging.info(f"使用的 Key 前五碼: {GEMINI_API_KEY[:5]}...")
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        logging.info(f"✅ 你的 Key 可以使用的模型: {available_models}")
-        if not available_models:
-            logging.error("❌ 警告：你的 Key 似乎無法存取任何生成模型！請檢查 Google Cloud 專案是否啟用了 'Generative Language API'。")
+        logging.info("🔍 正在偵測您的 API Key 可用模型...")
+        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        logging.info(f"📋 您的 Key 擁有的所有模型: {all_models}")
+        
+        # 優先順序策略：越前面的越優先
+        priority_list = [
+            "gemini-1.5-flash", 
+            "gemini-1.5-pro", 
+            "gemini-2.0-flash-exp",
+            "gemini-1.0-pro", 
+            "gemini-pro"
+        ]
+        
+        # 1. 先找有沒有完全符合的
+        for p in priority_list:
+            for m in all_models:
+                if p in m: # 只要名稱包含關鍵字 (例如 models/gemini-1.5-flash-001)
+                    BEST_MODEL_NAME = m
+                    break
+            if BEST_MODEL_NAME: break
+        
+        # 2. 如果都沒找到，就隨便拿第一個能用的
+        if not BEST_MODEL_NAME and all_models:
+            BEST_MODEL_NAME = all_models[0]
+            
+        logging.info(f"✅ 系統自動選擇了最佳模型: {BEST_MODEL_NAME}")
+        
     except Exception as e:
-        logging.error(f"❌ API Key 檢查失敗 (這代表 Key 無效或權限不足): {e}")
+        logging.error(f"❌ 模型偵測失敗: {e}")
+        # 如果真的偵測失敗，回退到最保險的預設值
+        BEST_MODEL_NAME = "gemini-1.5-flash"
 
 db = None
 try:
@@ -78,8 +102,7 @@ SCOPES = [
     'openid'
 ]
 
-# --- 內嵌 HTML ---
-# 1. 後台管理頁面 (整合你上傳的 admin.html)
+# --- Admin HTML ---
 ADMIN_HTML = """
 <!DOCTYPE html>
 <html lang="zh-Hant">
@@ -397,25 +420,20 @@ def handle_message(event):
             style = d.get('reply_style')
             for h in d.get('chat_history', []): hist.append({"role": h['role'], "parts": [h['text']]})
             
-        # 🔥 關鍵修改：三層備援機制，保證不死機 🔥
+        # 🔥🔥🔥 使用自動偵測到的最佳模型 🔥🔥🔥
+        # 這樣就不用猜名稱了，直接用 Google 告訴我們能用的那個
+        target_model = BEST_MODEL_NAME if BEST_MODEL_NAME else "gemini-1.5-flash"
+        
         try:
-            # 1. 首選：Gemini 1.5 Flash (快、便宜、功能強)
-            model = genai.GenerativeModel("gemini-1.5-flash", tools=tools_list, system_instruction=get_system_instruction(style))
+            model = genai.GenerativeModel(target_model, tools=tools_list, system_instruction=get_system_instruction(style))
             chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
             response = chat.send_message(msg)
-        except Exception as e_flash:
-            logging.warning(f"⚠️ 1.5-Flash 失敗，嘗試切換至 1.0-Pro... 錯誤: {e_flash}")
-            try:
-                # 2. 備援：Gemini 1.0 Pro (穩定舊版)
-                model = genai.GenerativeModel("gemini-1.0-pro", tools=tools_list, system_instruction=get_system_instruction(style))
-                chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
-                response = chat.send_message(msg)
-            except Exception as e_pro:
-                logging.warning(f"⚠️ 1.0-Pro 失敗，嘗試切換至 gemini-pro... 錯誤: {e_pro}")
-                # 3. 最後手段：gemini-pro (通用別名)
-                model = genai.GenerativeModel("gemini-pro", tools=tools_list, system_instruction=get_system_instruction(style))
-                chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
-                response = chat.send_message(msg)
+        except Exception as e:
+            # 萬一連自動偵測的都失敗，最後一次嘗試用 'gemini-pro' (1.0)
+            logging.error(f"Selected model {target_model} failed: {e}. Trying fallback 'gemini-pro'.")
+            model = genai.GenerativeModel("gemini-pro", tools=tools_list, system_instruction=get_system_instruction(style))
+            chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
+            response = chat.send_message(msg)
 
         reply_objs = []
         txt_res = []
@@ -444,9 +462,8 @@ def handle_message(event):
             
     except Exception as e:
         err_msg = str(e)
-        # 如果還是 404，那真的是 Key 的問題，不再是程式碼問題了
         if "404" in err_msg:
-            err_msg = "❌ API Key 無效：請檢查 Render Logs，程式啟動時已列出你的 Key 可用的模型。請確保 Google Cloud 專案已啟用 Generative Language API。"
+            err_msg = f"API Key 權限異常，無法存取模型 {BEST_MODEL_NAME}。請檢查 Google Cloud 專案設定。"
         logging.error(e)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"系統錯誤: {err_msg}", quick_reply=get_quick_reply(uid)))
 
