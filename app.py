@@ -51,10 +51,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 # 🔥 系統啟動時檢查版本 (Debug 用)
 try:
     logging.info(f"GenAI Library Version: {genai.__version__}")
-    logging.info("Available Models:")
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            logging.info(f" - {m.name}")
 except Exception as e:
     logging.error(f"Check Models Failed: {e}")
 
@@ -186,7 +182,24 @@ def get_quick_reply(user_id):
 
 # --- Flex Messages ---
 def create_introduction_bubble():
-    return BubbleContainer(body=BoxComponent(layout='vertical', contents=[TextComponent(text='👋 我是 AI 助理', weight='bold', size='xl', align='center'), TextComponent(text='日曆・記帳・郵件', align='center', margin='md')]), footer=BoxComponent(layout='vertical', contents=[ButtonComponent(style='primary', action=MessageAction(label='✨ 試試看', text='幫我新增明天早上9點開會'))]))
+    return BubbleContainer(
+        body=BoxComponent(
+            layout='vertical', 
+            contents=[
+                TextComponent(text='👋 我是 AI 助理', weight='bold', size='xl', align='center'), 
+                TextComponent(text='日曆・記帳・郵件', align='center', margin='md')
+            ]
+        ), 
+        footer=BoxComponent(
+            layout='vertical', 
+            contents=[
+                ButtonComponent(
+                    style='primary', 
+                    action=MessageAction(label='✨ 試試看', text='幫我新增明天早上9點開會')
+                )
+            ]
+        )
+    )
 
 def create_event_bubble(event_data):
     summary = event_data.get('summary') or '未命名行程'
@@ -293,5 +306,82 @@ def handle_message(event):
     msg = event.message.text.strip()
     if db is None: line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ DB Error")); return
     
-    if msg == "清空對話": clear_chat_history(uid); line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已清空", quick_reply=get_quick_reply(uid))); return
-    if msg in ["功能介紹", "請問你可以幫我做什麼？"]: line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="介紹
+    if msg == "清空對話":
+        clear_chat_history(uid)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已清空", quick_reply=get_quick_reply(uid)))
+        return
+    
+    if msg in ["功能介紹", "請問你可以幫我做什麼？"]:
+        line_bot_api.reply_message(event.reply_token, FlexSendMessage(alt_text="介紹", contents=create_introduction_bubble(), quick_reply=get_quick_reply(uid)))
+        return
+        
+    if msg == "登出":
+        delete_user_credentials(uid)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已登出", quick_reply=get_quick_reply(uid)))
+        return
+        
+    if msg == "設定角色":
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入：設定風格：xxx", quick_reply=get_quick_reply(uid)))
+        return
+        
+    if msg.startswith("設定風格："):
+        save_user_style(uid, msg.split("：")[1])
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="已設定", quick_reply=get_quick_reply(uid)))
+        return
+    
+    try:
+        requests.post("https://api.line.me/v2/bot/chat/loading/start", headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}, json={"chatId": uid, "loadingSeconds": 20})
+        
+        doc = db.collection('users').document(uid).get()
+        hist = []
+        style = None
+        if doc.exists:
+            d = doc.to_dict()
+            style = d.get('reply_style')
+            for h in d.get('chat_history', []): hist.append({"role": h['role'], "parts": [h['text']]})
+            
+        # 🔥 自動備援機制：先試 1.5-flash，失敗自動轉 1.0 pro
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash", tools=tools_list, system_instruction=get_system_instruction(style))
+            chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
+            response = chat.send_message(msg)
+        except Exception as e_flash:
+            logging.warning(f"1.5-flash failed, switching to gemini-pro: {e_flash}")
+            model = genai.GenerativeModel("gemini-pro", tools=tools_list, system_instruction=get_system_instruction(style))
+            chat = model.start_chat(history=hist, enable_automatic_function_calling=False)
+            response = chat.send_message(msg)
+        
+        reply_objs = []
+        txt_res = []
+        
+        if response.parts:
+            for p in response.parts:
+                if p.function_call:
+                    api_res = execute_api_logic(uid, p.function_call.name, dict(p.function_call.args))
+                    chat.send_message(genai.protos.Content(parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(name=p.function_call.name, response={"result": str(api_res)}))]))
+                    if isinstance(api_res, dict):
+                        if api_res.get('action') == 'accounting': reply_objs.append(create_accounting_bubble(api_res['data'], uid))
+                        elif api_res.get('action') == 'calendar_create': reply_objs.append(create_event_bubble(api_res))
+                    else: txt_res.append(str(api_res))
+                elif p.text:
+                    txt_res.append(p.text)
+                    save_chat_history(uid, msg, p.text)
+        
+        if reply_objs: reply_objs = [FlexSendMessage(alt_text="結果", contents=CarouselContainer(contents=reply_objs) if len(reply_objs)>1 else reply_objs[0])]
+        if txt_res: reply_objs.append(TextSendMessage(text="\n".join(txt_res)))
+        
+        if reply_objs:
+            reply_objs[-1].quick_reply = get_quick_reply(uid)
+            line_bot_api.reply_message(event.reply_token, reply_objs)
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="處理完畢", quick_reply=get_quick_reply(uid)))
+            
+    except Exception as e:
+        err_msg = str(e)
+        if "404" in err_msg:
+            err_msg = "⚠️ 請在 Render 執行 'Clear Build Cache & Deploy'"
+        logging.error(e)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"錯誤: {err_msg}", quick_reply=get_quick_reply(uid)))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)
