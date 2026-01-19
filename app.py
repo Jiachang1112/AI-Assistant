@@ -674,10 +674,18 @@ def handle_message(event):
 
         current_instruction = get_system_instruction(user_style)
         
-        # 🔥 修改點：降級為 1.5-flash，避免 2.0 預覽版不穩
-        model = genai.GenerativeModel("gemini-1.5-flash", tools=tools_list, system_instruction=current_instruction)
-        chat = model.start_chat(history=history, enable_automatic_function_calling=False)
-        response = chat.send_message(user_msg)
+        # 🔥 🔥 重點修改：自動備援機制 🔥 🔥
+        # 先嘗試用最新的 1.5-flash
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash", tools=tools_list, system_instruction=current_instruction)
+            chat = model.start_chat(history=history, enable_automatic_function_calling=False)
+            response = chat.send_message(user_msg)
+        except Exception as e_flash:
+            # 如果 1.5-flash 失敗（例如 404），自動切換回舊版 gemini-pro
+            logging.warning(f"⚠️ 1.5-flash failed, switching to gemini-pro. Error: {e_flash}")
+            model = genai.GenerativeModel("gemini-pro", tools=tools_list, system_instruction=current_instruction)
+            chat = model.start_chat(history=history, enable_automatic_function_calling=False)
+            response = chat.send_message(user_msg)
         
         flex_bubbles = []
         text_responses = []
@@ -712,7 +720,7 @@ def handle_message(event):
 
     except Exception as e:
         logging.exception("Error")
-        # 🔥 修改點：在這裡顯示具體錯誤，這樣你才知道是哪裡壞掉
+        # 顯示具體錯誤，方便除錯
         error_msg = f"系統忙碌中，錯誤代碼：{str(e)}"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=error_msg, quick_reply=get_quick_reply(user_id)))
 
