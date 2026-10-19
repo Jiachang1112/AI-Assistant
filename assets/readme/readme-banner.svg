@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="450" viewBox="0 0 1280 450" role="img" aria-labelledby="t d">
+  <title id="t">AI 助理 AI-Assistant</title>
+  <desc id="d">LINE 機器人：Gemini 對話、Google 日曆、Gmail 與記帳。目前狀態：失敗</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#052e16"/>
+      <stop offset="0.55" stop-color="#047857"/>
+      <stop offset="1" stop-color="#06c755"/>
+    </linearGradient>
+    <linearGradient id="bar" x1="0" x2="1">
+      <stop offset="0" stop-color="#06c755"/>
+      <stop offset="0.5" stop-color="#4285f4"/>
+      <stop offset="1" stop-color="#ea4335"/>
+    </linearGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#ffffff" opacity="0.12"/>
+    </pattern>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#050a1f" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="450" fill="url(#bg)"/>
+  <rect width="1280" height="450" fill="url(#dots)"/>
+  <circle cx="1170" cy="40" r="190" fill="#4285f4" opacity="0.35"/>
+  <circle cx="90" cy="430" r="150" fill="#ffe56a" opacity="0.25"/>
+  <circle cx="1230" cy="420" r="120" fill="#ea4335" opacity="0.28"/>
+
+  <g filter="url(#shadow)">
+    <rect x="70" y="56" width="1140" height="338" rx="22" fill="#fdfdfb"/>
+  </g>
+  <rect x="70" y="56" width="1140" height="8" rx="4" fill="url(#bar)"/>
+  <circle cx="106" cy="130" r="7" fill="#e2e5ee"/>
+  <circle cx="106" cy="196" r="7" fill="#e2e5ee"/>
+  <circle cx="106" cy="262" r="7" fill="#e2e5ee"/>
+
+  <rect x="150" y="104" width="286" height="84" rx="6" fill="#ffe56a"/>
+  <text x="162" y="168" font-family="'Noto Serif TC','Noto Serif CJK TC','Songti TC','PMingLiU',serif" font-size="66" font-weight="900" fill="#101a3d">AI 助理</text>
+
+  <text x="152" y="228" font-family="'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif" font-size="24" fill="#4a5163">LINE Bot  ・  Gemini  ・  Google 日曆  ・  Gmail  ・  記帳</text>
+
+  <g font-family="'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif" font-size="17" font-weight="600">
+    <rect x="152" y="258" width="145" height="40" rx="20" fill="#05a647"/>
+    <text x="224.5" y="284" text-anchor="middle" fill="#ffffff">💬 LINE Bot</text>
+    <rect x="311" y="258" width="126" height="40" rx="20" fill="#4285f4"/>
+    <text x="374.0" y="284" text-anchor="middle" fill="#ffffff">✨ Gemini</text>
+    <rect x="451" y="258" width="179" height="40" rx="20" fill="#ea4335"/>
+    <text x="540.5" y="284" text-anchor="middle" fill="#ffffff">📅 日曆 + Gmail</text>
+    <rect x="644" y="258" width="134" height="40" rx="20" fill="#b91c1c"/>
+    <text x="711.0" y="284" text-anchor="middle" fill="#ffffff">🔴 目前失敗</text>
+  </g>
+  <text x="152" y="350" font-family="'Noto Sans TC','PingFang TC','Microsoft JhengHei',sans-serif" font-size="18" fill="#7a8194">Python ‧ Flask ‧ Firestore　部署在 Render（狀態：目前失敗，詳見 README）</text>
+
+  <g transform="translate(878 112)">
+    <path d="M30 20 H190 a28 28 0 0 1 28 28 V120 a28 28 0 0 1 -28 28 H110 L66 186 V148 H58 a28 28 0 0 1 -28 -28 Z" fill="#06c755" stroke="#04542a" stroke-width="6" stroke-linejoin="round"/>
+    <circle cx="82" cy="84" r="11" fill="#fff"/><circle cx="124" cy="84" r="11" fill="#fff"/><circle cx="166" cy="84" r="11" fill="#fff"/>
+    <path d="M232 14 l9 24 24 9 -24 9 -9 24 -9 -24 -24 -9 24 -9 z" fill="#ffe56a" stroke="#8a6a00" stroke-width="3" stroke-linejoin="round"/>
+    <rect x="150" y="150" width="104" height="82" rx="12" fill="#fff" stroke="#1a2146" stroke-width="5"/>
+    <rect x="150" y="150" width="104" height="24" rx="12" fill="#ea4335"/>
+    <rect x="150" y="162" width="104" height="12" fill="#ea4335"/>
+    <g fill="#4285f4"><rect x="164" y="186" width="16" height="12" rx="2"/><rect x="190" y="186" width="16" height="12" rx="2"/><rect x="216" y="186" width="16" height="12" rx="2" fill="#fbbc05"/>
+    <rect x="164" y="206" width="16" height="12" rx="2" fill="#34a853"/><rect x="190" y="206" width="16" height="12" rx="2"/></g>
+  </g>
+</svg>
